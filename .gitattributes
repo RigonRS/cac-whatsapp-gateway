@@ -1,0 +1,4 @@
+# Garante quebras de linha LF (o gateway roda em Linux na VPS)
+* text=auto eol=lf
+*.png binary
+*.jpg binary
