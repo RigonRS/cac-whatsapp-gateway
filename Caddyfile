@@ -1,0 +1,5 @@
+# Caddy obtém o certificado HTTPS automaticamente (Let's Encrypt)
+# desde que o domínio {$DOMAIN} aponte para o IP desta VPS.
+{$DOMAIN} {
+	reverse_proxy gateway:3000
+}
