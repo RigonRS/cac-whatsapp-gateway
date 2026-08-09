@@ -44,11 +44,13 @@ function verifyIdToken(token) {
 // Mapeia o e-mail do login para o nome do atendente (mesma lógica do getCurrentUserName no app).
 function nomeAtendente(decoded) {
   const email = String(decoded.preferred_username || decoded.email || '').toLowerCase();
-  if (email.includes('recepcao')) return 'Andrieli';
-  if (email.includes('geison')) return 'Geison';
-  if (email.includes('priscila')) return 'Priscila';
-  if (email.includes('simone')) return 'Simone';
-  if (email.includes('matheus')) return 'Matheus';
+  // Só a parte antes do @ (o domínio simonebpegoraro contém "simone" e confundia todos)
+  const local = email.split('@')[0];
+  if (local.includes('recepcao')) return 'Andrieli';
+  if (local.includes('geison')) return 'Geison';
+  if (local.includes('priscila')) return 'Priscila';
+  if (local.includes('matheus')) return 'Matheus';
+  if (local.includes('simone')) return 'Simone';
   return decoded.name || email || 'Atendente';
 }
 
