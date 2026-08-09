@@ -1,6 +1,5 @@
 // ============================================================
 // CLIENTES — cache de clientes.json e casamento por telefone
-// Usado para vincular a conversa ao cliente e arquivar arquivos na pasta dele.
 // ============================================================
 const { getClientes } = require('./graph');
 
@@ -14,9 +13,11 @@ function chaveTelefone(v) {
   return d.length >= 8 ? d.slice(-8) : d;
 }
 
-// jid do WhatsApp: "5554999999999@s.whatsapp.net" -> últimos 8 dígitos
-function chaveDeJid(jid) {
-  return chaveTelefone(String(jid || '').split('@')[0]);
+// Aceita telefone (dígitos) ou jid ("5554...@s.whatsapp.net")
+function chaveDe(v) {
+  const s = String(v || '');
+  const num = s.includes('@') ? s.split('@')[0] : s;
+  return chaveTelefone(num);
 }
 
 async function atualizarCache(force = false) {
@@ -30,13 +31,13 @@ async function atualizarCache(force = false) {
   return _cache;
 }
 
-// Devolve { id, Title, Celular } do cliente cujo Celular casa com o jid, ou null.
-async function acharPorJid(jid) {
-  const alvo = chaveDeJid(jid);
-  if (!alvo) return null;
+// Devolve { id, Title, Celular } do cliente cujo Celular casa, ou null.
+async function acharPorTelefone(v) {
+  const alvo = chaveDe(v);
+  if (!alvo || alvo.length < 8) return null;
   const lista = await atualizarCache();
   const c = lista.find((cli) => chaveTelefone(cli.Celular) === alvo);
   return c ? { id: c.id, Title: c.Title, Celular: c.Celular } : null;
 }
 
-module.exports = { acharPorJid, atualizarCache };
+module.exports = { acharPorTelefone, atualizarCache };

@@ -1,8 +1,9 @@
 // ============================================================
-// WHATSAPP (Baileys) — conexão via QR, receber/enviar mensagens,
-// e arquivamento automático dos arquivos recebidos na pasta do cliente.
+// WHATSAPP (Baileys) — conexão via QR, receber/enviar (texto e mídia),
+// foto de perfil, importação de histórico e arquivamento na pasta do cliente.
 // ============================================================
 const path = require('path');
+const fs = require('fs');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -15,13 +16,18 @@ const pino = require('pino');
 
 const clientes = require('./clientes');
 const graph = require('./graph');
+const db = require('./db');
 
-const AUTH_DIR = process.env.AUTH_DIR || path.join(__dirname, 'data', 'auth');
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const AUTH_DIR = process.env.AUTH_DIR || path.join(DATA_DIR, 'auth');
+const MEDIA_DIR = path.join(DATA_DIR, 'media');
+fs.mkdirSync(MEDIA_DIR, { recursive: true });
+
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
 let sock = null;
 let estado = { conectado: false, qr: null, numero: null };
-let handlers = { onMessage: () => {}, onStatus: () => {} };
+let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {} };
 
 const EXT_POR_MIME = {
   'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif',
@@ -38,7 +44,13 @@ function nomeArquivoPadrao(tipo, mime, ts) {
   return `${tipo}-${data}.${ext}`;
 }
 
-// Extrai conteúdo da mensagem: { type, body, mediaFn?, mediaName?, mime? }
+function salvarMediaLocal(id, filename, buffer) {
+  const safe = String(filename || 'arquivo').replace(/[^\w.\-]/g, '_');
+  const stored = `${String(id).replace(/[^\w.\-]/g, '_')}-${safe}`.slice(-140);
+  fs.writeFileSync(path.join(MEDIA_DIR, stored), buffer);
+  return `/media/${stored}`;
+}
+
 function extrairConteudo(m) {
   const msg = m.message || {};
   if (msg.conversation) return { type: 'text', body: msg.conversation };
@@ -52,25 +64,34 @@ function extrairConteudo(m) {
   return { type: 'other', body: '' };
 }
 
+// Descobre o telefone real. Para jid @lid (privacidade), tenta o número alternativo.
+async function resolverPhone(jid, m) {
+  if (jid.endsWith('@s.whatsapp.net')) return jid.split('@')[0].replace(/\D/g, '');
+  if (jid.endsWith('@lid')) {
+    const alt = m.key?.senderPn || m.key?.participantPn || m.key?.remoteJidAlt || null;
+    if (alt) return String(alt).split('@')[0].replace(/\D/g, '');
+    try {
+      const map = sock?.signalRepository?.lidMapping;
+      if (map?.getPNForLID) { const pn = await map.getPNForLID(jid); if (pn) return String(pn).split('@')[0].replace(/\D/g, ''); }
+    } catch (e) {}
+  }
+  return null;
+}
+
 async function conectar() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
 
-  sock = makeWASocket({ version, auth: state, printQRInTerminal: false, logger, syncFullHistory: false });
+  sock = makeWASocket({ version, auth: state, printQRInTerminal: false, logger, syncFullHistory: true });
 
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', async (u) => {
     const { connection, lastDisconnect, qr } = u;
-    if (qr) {
-      estado.qr = await QRCode.toDataURL(qr);
-      estado.conectado = false;
-      handlers.onStatus(estado);
-    }
+    if (qr) { estado.qr = await QRCode.toDataURL(qr); estado.conectado = false; handlers.onStatus(estado); }
     if (connection === 'open') {
-      estado.conectado = true;
-      estado.qr = null;
-      estado.numero = sock?.user?.id ? sock.user.id.split(':')[0] : null;
+      estado.conectado = true; estado.qr = null;
+      estado.numero = sock?.user?.id ? sock.user.id.split(':')[0].split('@')[0] : null;
       handlers.onStatus(estado);
       console.log('[wa] conectado como', estado.numero);
     }
@@ -78,99 +99,104 @@ async function conectar() {
       estado.conectado = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       handlers.onStatus(estado);
-      if (code === DisconnectReason.loggedOut) {
-        console.log('[wa] deslogado — é preciso ler o QR novamente.');
-        // creds inválidas: reinicia para gerar novo QR
-        setTimeout(conectar, 2000);
-      } else {
-        console.log('[wa] conexão caiu, reconectando...');
-        setTimeout(conectar, 3000);
-      }
+      if (code === DisconnectReason.loggedOut) { console.log('[wa] deslogado — novo QR.'); setTimeout(conectar, 2000); }
+      else { console.log('[wa] reconectando...'); setTimeout(conectar, 3000); }
     }
+  });
+
+  // Importa histórico enviado pelo WhatsApp ao conectar
+  sock.ev.on('messaging-history.set', async ({ messages }) => {
+    let n = 0;
+    for (const m of (messages || [])) {
+      try { if (await processarMensagem(m, false)) n++; } catch (e) {}
+    }
+    if (n) { console.log(`[wa] histórico importado: ${n} mensagens`); handlers.onRefresh(); }
   });
 
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
     for (const m of messages) {
-      try {
-        await processarMensagem(m);
-      } catch (e) {
-        console.error('[wa] erro ao processar mensagem:', e.message);
-      }
+      try { await processarMensagem(m, true); } catch (e) { console.error('[wa] processar:', e.message); }
     }
   });
 }
 
-async function processarMensagem(m) {
+// Processa uma mensagem. live=true: baixa mídia, arquiva e emite em tempo real.
+// live=false: só grava (usado na importação de histórico). Retorna true se gravou.
+async function processarMensagem(m, live = true) {
   const jid = m.key.remoteJid || '';
-  if (jid.endsWith('@g.us') || jid === 'status@broadcast') return; // Fase 1: só conversas 1:1
-  if (!m.message) return;
+  if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return false;
+  if (!m.message) return false;
 
   const fromMe = !!m.key.fromMe;
   const ts = Number(m.messageTimestamp) || Math.floor(Date.now() / 1000);
   const nomeContato = m.pushName || null;
   const conteudo = extrairConteudo(m);
+  if (conteudo.type === 'other') return false;
+  const phone = await resolverPhone(jid, m);
 
-  let savedPath = null;
-  let mediaName = conteudo.mediaName || null;
-
+  let savedPath = null, mediaName = conteudo.mediaName || null, mediaUrl = null;
   const ehMidia = ['image', 'video', 'audio', 'document', 'sticker'].includes(conteudo.type);
 
-  // Arquiva o arquivo recebido (só de mensagens recebidas, não das nossas) na pasta do cliente.
-  if (ehMidia && !fromMe) {
+  if (ehMidia && live) {
     try {
       const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
       if (!mediaName) mediaName = nomeArquivoPadrao(conteudo.type, conteudo.mime, ts);
-      const cliente = await clientes.acharPorJid(jid);
-      if (cliente) {
-        await graph.salvarArquivoCliente(cliente.Title, mediaName, buffer);
-        savedPath = `${graph.DOCS_PATH}/${cliente.Title}/${graph.SUBPASTA_RECEBIDOS}/${mediaName}`;
-        console.log(`[wa] arquivo "${mediaName}" salvo em ${cliente.Title}/${graph.SUBPASTA_RECEBIDOS}`);
-      } else {
-        console.log(`[wa] arquivo "${mediaName}" recebido de ${jid} sem cliente cadastrado — mantido só no histórico.`);
+      mediaUrl = salvarMediaLocal(m.key.id, mediaName, buffer);
+      if (!fromMe) {
+        const cliente = await clientes.acharPorTelefone(phone || jid);
+        if (cliente) {
+          await graph.salvarArquivoCliente(cliente.Title, mediaName, buffer);
+          savedPath = `${graph.DOCS_PATH}/${cliente.Title}/${graph.SUBPASTA_RECEBIDOS}/${mediaName}`;
+          console.log(`[wa] arquivo "${mediaName}" salvo na pasta de ${cliente.Title}`);
+        }
       }
-    } catch (e) {
-      console.error('[wa] falha ao baixar/arquivar mídia:', e.message);
-    }
+    } catch (e) { console.error('[wa] mídia:', e.message); }
   }
 
   const registro = {
-    id: m.key.id,
-    jid,
-    fromMe,
-    body: conteudo.body,
-    type: conteudo.type,
-    mediaName,
-    savedPath,
-    ts,
-    author: fromMe ? 'sistema' : null,
-    nomeContato,
+    id: m.key.id, jid, phone, fromMe,
+    body: conteudo.body, type: conteudo.type,
+    mediaName, mediaUrl, savedPath, ts,
+    author: fromMe ? 'sistema' : null, nomeContato,
   };
-  handlers.onMessage(registro);
+  db.registrarMensagem(registro);
+  if (live) handlers.onMessage(registro);
+  return true;
 }
 
 async function sendText(jid, texto) {
   if (!sock || !estado.conectado) throw new Error('WhatsApp não está conectado.');
   const alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
   const r = await sock.sendMessage(alvo, { text: texto });
-  return {
-    id: r.key.id,
-    jid: alvo,
-    fromMe: true,
-    body: texto,
-    type: 'text',
-    ts: Math.floor(Date.now() / 1000),
-    author: 'sistema',
-  };
+  return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: texto, type: 'text', ts: Math.floor(Date.now() / 1000), author: 'sistema' };
 }
 
-function getEstado() {
-  return { conectado: estado.conectado, qr: estado.qr, numero: estado.numero };
+async function sendMedia(jid, filename, mimetype, buffer, caption) {
+  if (!sock || !estado.conectado) throw new Error('WhatsApp não está conectado.');
+  const alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
+  const mt = mimetype || 'application/octet-stream';
+  let content, tipo;
+  if (mt.startsWith('image/')) { content = { image: buffer, caption: caption || undefined, mimetype: mt }; tipo = 'image'; }
+  else if (mt.startsWith('video/')) { content = { video: buffer, caption: caption || undefined, mimetype: mt }; tipo = 'video'; }
+  else if (mt.startsWith('audio/')) { content = { audio: buffer, mimetype: mt }; tipo = 'audio'; }
+  else { content = { document: buffer, fileName: filename, mimetype: mt, caption: caption || undefined }; tipo = 'document'; }
+  const r = await sock.sendMessage(alvo, content);
+  const mediaUrl = salvarMediaLocal(r.key.id, filename, buffer);
+  return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: caption || '', type: tipo, mediaName: filename, mediaUrl, ts: Math.floor(Date.now() / 1000), author: 'sistema' };
 }
+
+async function avatarUrl(jid) {
+  if (!sock) return null;
+  const alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
+  try { return await sock.profilePictureUrl(alvo, 'image'); } catch (e) { return null; }
+}
+
+function getEstado() { return { conectado: estado.conectado, qr: estado.qr, numero: estado.numero }; }
 
 function initWA(h) {
   handlers = { ...handlers, ...h };
   conectar().catch((e) => console.error('[wa] erro ao conectar:', e.message));
 }
 
-module.exports = { initWA, sendText, getEstado };
+module.exports = { initWA, sendText, sendMedia, avatarUrl, getEstado };
