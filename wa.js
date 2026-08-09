@@ -29,6 +29,24 @@ let sock = null;
 let estado = { conectado: false, qr: null, numero: null };
 let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {} };
 
+// Mapa LID (identificador de privacidade) -> telefone real, montado a partir dos contatos
+const LID_PN = {};
+function registrarContatos(arr) {
+  for (const c of (arr || [])) {
+    try {
+      const id = String(c.id || '');
+      const lid = String(c.lid || '');
+      if (lid.endsWith('@lid') && id.endsWith('@s.whatsapp.net')) LID_PN[lid] = id.split('@')[0].replace(/\D/g, '');
+      if (id.endsWith('@lid') && String(c.jid || '').endsWith('@s.whatsapp.net')) LID_PN[id] = String(c.jid).split('@')[0].replace(/\D/g, '');
+    } catch (e) {}
+  }
+}
+function phoneDoLid(jid) {
+  if (LID_PN[jid]) return LID_PN[jid];
+  try { const m = sock?.signalRepository?.lidMapping; if (m?.getPNForLIDSync) { const pn = m.getPNForLIDSync(jid); if (pn) return String(pn).split('@')[0].replace(/\D/g, ''); } } catch (e) {}
+  return null;
+}
+
 const EXT_POR_MIME = {
   'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif',
   'application/pdf': 'pdf', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a',
@@ -70,6 +88,8 @@ async function resolverPhone(jid, m) {
   if (jid.endsWith('@lid')) {
     const alt = m.key?.senderPn || m.key?.participantPn || m.key?.remoteJidAlt || null;
     if (alt) return String(alt).split('@')[0].replace(/\D/g, '');
+    const mapped = phoneDoLid(jid);
+    if (mapped) return mapped;
     try {
       const map = sock?.signalRepository?.lidMapping;
       if (map?.getPNForLID) { const pn = await map.getPNForLID(jid); if (pn) return String(pn).split('@')[0].replace(/\D/g, ''); }
@@ -85,6 +105,9 @@ async function conectar() {
   sock = makeWASocket({ version, auth: state, printQRInTerminal: false, logger, syncFullHistory: true });
 
   sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('contacts.upsert', registrarContatos);
+  sock.ev.on('contacts.update', registrarContatos);
 
   sock.ev.on('connection.update', async (u) => {
     const { connection, lastDisconnect, qr } = u;
@@ -105,7 +128,8 @@ async function conectar() {
   });
 
   // Importa histórico enviado pelo WhatsApp ao conectar
-  sock.ev.on('messaging-history.set', async ({ messages }) => {
+  sock.ev.on('messaging-history.set', async ({ messages, contacts }) => {
+    registrarContatos(contacts);
     let n = 0;
     for (const m of (messages || [])) {
       try { if (await processarMensagem(m, false)) n++; } catch (e) {}
@@ -188,8 +212,14 @@ async function sendMedia(jid, filename, mimetype, buffer, caption) {
 
 async function avatarUrl(jid) {
   if (!sock) return null;
-  const alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
-  try { return await sock.profilePictureUrl(alvo, 'image'); } catch (e) { return null; }
+  let alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
+  try { const u = await sock.profilePictureUrl(alvo, 'image'); if (u) return u; } catch (e) {}
+  // Se for @lid, tenta pelo telefone real
+  if (String(jid).endsWith('@lid')) {
+    const pn = phoneDoLid(jid);
+    if (pn) { try { return await sock.profilePictureUrl(`${pn}@s.whatsapp.net`, 'image'); } catch (e) {} }
+  }
+  return null;
 }
 
 function getEstado() { return { conectado: estado.conectado, qr: estado.qr, numero: estado.numero }; }
