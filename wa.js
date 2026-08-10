@@ -100,6 +100,21 @@ function salvarMediaLocal(id, filename, buffer) {
   return `/media/${stored}`;
 }
 
+// Desembrulha mensagens aninhadas (efêmeras, ver-uma-vez, documento-com-legenda, editadas)
+function desembrulhar(message) {
+  let msg = message || {};
+  for (let i = 0; i < 5; i++) {
+    if (msg.ephemeralMessage?.message) { msg = msg.ephemeralMessage.message; continue; }
+    if (msg.viewOnceMessage?.message) { msg = msg.viewOnceMessage.message; continue; }
+    if (msg.viewOnceMessageV2?.message) { msg = msg.viewOnceMessageV2.message; continue; }
+    if (msg.viewOnceMessageV2Extension?.message) { msg = msg.viewOnceMessageV2Extension.message; continue; }
+    if (msg.documentWithCaptionMessage?.message) { msg = msg.documentWithCaptionMessage.message; continue; }
+    if (msg.editedMessage?.message) { msg = msg.editedMessage.message; continue; }
+    break;
+  }
+  return msg;
+}
+
 function extrairConteudo(m) {
   const msg = m.message || {};
   if (msg.conversation) return { type: 'text', body: msg.conversation };
@@ -162,6 +177,9 @@ async function conectar() {
       estado.numero = sock?.user?.id ? sock.user.id.split(':')[0].split('@')[0] : null;
       handlers.onStatus(estado);
       console.log('[wa] conectado como', estado.numero);
+      // Corrige conversas cujo nome ficou com o nome do próprio número (bug antigo)
+      const meuNome = sock?.user?.name || sock?.user?.verifiedName || null;
+      if (meuNome) { try { const n = db.limparNomeDono(meuNome); if (n) console.log(`[wa] ${n} nome(s) contaminado(s) corrigido(s)`); } catch (e) {} }
     }
     if (connection === 'close') {
       estado.conectado = false;
@@ -196,6 +214,7 @@ async function processarMensagem(m, live = true) {
   const jid = m.key.remoteJid || '';
   if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return false;
   if (!m.message) return false;
+  m.message = desembrulhar(m.message);   // trata documento-com-legenda, efêmeras, etc.
   const ehGrupo = jid.endsWith('@g.us');
 
   const fromMe = !!m.key.fromMe;
@@ -207,7 +226,10 @@ async function processarMensagem(m, live = true) {
   // Guarda o pushName para reaproveitar em mensagens futuras deste contato
   if (pushName && !fromMe) { guardarNome(jid, pushName); if (phone) guardarNome(phone.slice(-8), pushName); }
   // Em grupo, o "contato" da conversa é o próprio grupo; quem enviou vai no campo author.
-  const nomeContato = ehGrupo ? await nomeGrupo(jid) : (pushName || nomeSalvo(jid, phone));
+  // Em mensagens enviadas por nós (fromMe), o pushName é o NOSSO nome — nunca usar como nome do contato.
+  const nomeContato = ehGrupo
+    ? await nomeGrupo(jid)
+    : (fromMe ? nomeSalvo(jid, phone) : (pushName || nomeSalvo(jid, phone)));
 
   let savedPath = null, mediaName = conteudo.mediaName || null, mediaUrl = null;
   const ehMidia = ['image', 'video', 'audio', 'document', 'sticker'].includes(conteudo.type);

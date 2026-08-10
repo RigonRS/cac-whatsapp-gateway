@@ -117,6 +117,20 @@ function listarContatos() {
   return db.prepare(`SELECT jid, phone, nome FROM contatos WHERE nome IS NOT NULL AND nome != ''`).all();
 }
 
+// Zera nomes de conversa que ficaram iguais ao nome do próprio número conectado
+function limparNomeDono(nome) {
+  const r = db.prepare(`UPDATE chats SET name = NULL WHERE name = ?`).run(nome);
+  return r.changes || 0;
+}
+
+// Busca por conteúdo das mensagens; devolve a mais recente por conversa
+function buscarMensagens(termo, limite = 40) {
+  const rows = db.prepare(`SELECT jid, body, ts FROM messages WHERE body LIKE ? ORDER BY ts DESC LIMIT 500`).all(`%${termo}%`);
+  const vistos = new Set(); const out = [];
+  for (const r of rows) { if (vistos.has(r.jid)) continue; vistos.add(r.jid); out.push(r); if (out.length >= limite) break; }
+  return out;
+}
+
 function marcarLido(jid) {
   db.prepare(`UPDATE chats SET unread = 0 WHERE jid = ?`).run(jid);
 }
@@ -129,4 +143,4 @@ function definirAtendente(jid, atendente) {
   db.prepare(`UPDATE chats SET assigned_to = ? WHERE jid = ?`).run(atendente, jid);
 }
 
-module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, marcarLido, marcarTodosLidos, definirAtendente, salvarContato, listarContatos };
+module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, marcarLido, marcarTodosLidos, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens };

@@ -65,6 +65,12 @@ app.post('/read-all', requireAuth, (req, res) => { db.marcarTodosLidos(); res.js
 
 app.get('/chats', requireAuth, (req, res) => res.json({ chats: db.listarChats() }));
 
+app.get('/search', requireAuth, (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (q.length < 2) return res.json({ resultados: [] });
+  res.json({ resultados: db.buscarMensagens(q) });
+});
+
 app.get('/contatos', requireAuth, (req, res) => {
   const arr = db.listarContatos().map(c => {
     let phone = c.phone;
