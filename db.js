@@ -98,8 +98,12 @@ function marcarLido(jid) {
   db.prepare(`UPDATE chats SET unread = 0 WHERE jid = ?`).run(jid);
 }
 
+function marcarTodosLidos() {
+  db.prepare(`UPDATE chats SET unread = 0 WHERE unread > 0`).run();
+}
+
 function definirAtendente(jid, atendente) {
   db.prepare(`UPDATE chats SET assigned_to = ? WHERE jid = ?`).run(atendente, jid);
 }
 
-module.exports = { registrarMensagem, listarChats, listarMensagens, marcarLido, definirAtendente };
+module.exports = { registrarMensagem, listarChats, listarMensagens, marcarLido, marcarTodosLidos, definirAtendente };

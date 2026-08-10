@@ -31,6 +31,11 @@ let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {} };
 
 // Mapa LID (identificador de privacidade) -> telefone real, montado a partir dos contatos
 const LID_PN = {};
+// Nomes dos contatos (o que está salvo na agenda / pushName), por jid e por telefone (8 dígitos)
+const NOMES = {};
+function guardarNome(chave, nome) {
+  if (chave && nome && !NOMES[chave]) NOMES[chave] = nome;
+}
 function registrarContatos(arr) {
   for (const c of (arr || [])) {
     try {
@@ -38,8 +43,22 @@ function registrarContatos(arr) {
       const lid = String(c.lid || '');
       if (lid.endsWith('@lid') && id.endsWith('@s.whatsapp.net')) LID_PN[lid] = id.split('@')[0].replace(/\D/g, '');
       if (id.endsWith('@lid') && String(c.jid || '').endsWith('@s.whatsapp.net')) LID_PN[id] = String(c.jid).split('@')[0].replace(/\D/g, '');
+      // Nome salvo do contato (prioriza o nome da agenda, depois o pushName/verificado)
+      const nome = c.name || c.notify || c.verifiedName || null;
+      if (nome) {
+        guardarNome(id, nome);
+        const dig = id.split('@')[0].replace(/\D/g, '');
+        if (dig.length >= 8) guardarNome(dig.slice(-8), nome);
+      }
     } catch (e) {}
   }
+}
+// Descobre o melhor nome conhecido para um contato (agenda/pushName), por jid ou telefone
+function nomeSalvo(jid, phone) {
+  if (NOMES[jid]) return NOMES[jid];
+  const dig = String(phone || jid || '').replace(/\D/g, '');
+  if (dig.length >= 8 && NOMES[dig.slice(-8)]) return NOMES[dig.slice(-8)];
+  return null;
 }
 function phoneDoLid(jid) {
   if (LID_PN[jid]) return LID_PN[jid];
@@ -172,9 +191,11 @@ async function processarMensagem(m, live = true) {
   const pushName = m.pushName || null;
   const conteudo = extrairConteudo(m);
   if (conteudo.type === 'other') return false;
-  // Em grupo, o "contato" da conversa é o próprio grupo; quem enviou vai no campo author.
-  const nomeContato = ehGrupo ? await nomeGrupo(jid) : pushName;
   const phone = ehGrupo ? null : await resolverPhone(jid, m);
+  // Guarda o pushName para reaproveitar em mensagens futuras deste contato
+  if (pushName && !fromMe) { guardarNome(jid, pushName); if (phone) guardarNome(phone.slice(-8), pushName); }
+  // Em grupo, o "contato" da conversa é o próprio grupo; quem enviou vai no campo author.
+  const nomeContato = ehGrupo ? await nomeGrupo(jid) : (pushName || nomeSalvo(jid, phone));
 
   let savedPath = null, mediaName = conteudo.mediaName || null, mediaUrl = null;
   const ehMidia = ['image', 'video', 'audio', 'document', 'sticker'].includes(conteudo.type);

@@ -61,6 +61,8 @@ app.post('/logout', requireAuth, async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.post('/read-all', requireAuth, (req, res) => { db.marcarTodosLidos(); res.json({ ok: true }); });
+
 app.get('/chats', requireAuth, (req, res) => res.json({ chats: db.listarChats() }));
 
 app.get('/messages', requireAuth, (req, res) => {
