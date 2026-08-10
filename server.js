@@ -65,6 +65,15 @@ app.post('/read-all', requireAuth, (req, res) => { db.marcarTodosLidos(); res.js
 
 app.get('/chats', requireAuth, (req, res) => res.json({ chats: db.listarChats() }));
 
+app.get('/contatos', requireAuth, (req, res) => {
+  const arr = db.listarContatos().map(c => {
+    let phone = c.phone;
+    if (!phone && String(c.jid || '').endsWith('@s.whatsapp.net')) phone = String(c.jid).split('@')[0].replace(/\D/g, '');
+    return { phone: phone || null, nome: c.nome };
+  }).filter(c => c.phone);
+  res.json({ contatos: arr });
+});
+
 app.get('/messages', requireAuth, (req, res) => {
   const jid = req.query.jid;
   if (!jid) return res.status(400).json({ error: 'jid é obrigatório' });

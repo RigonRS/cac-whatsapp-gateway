@@ -45,13 +45,25 @@ function registrarContatos(arr) {
       if (id.endsWith('@lid') && String(c.jid || '').endsWith('@s.whatsapp.net')) LID_PN[id] = String(c.jid).split('@')[0].replace(/\D/g, '');
       // Nome salvo do contato (prioriza o nome da agenda, depois o pushName/verificado)
       const nome = c.name || c.notify || c.verifiedName || null;
+      const phone = id.endsWith('@s.whatsapp.net') ? id.split('@')[0].replace(/\D/g, '') : (LID_PN[id] || null);
       if (nome) {
         guardarNome(id, nome);
-        const dig = id.split('@')[0].replace(/\D/g, '');
+        const dig = (phone || id.split('@')[0]).replace(/\D/g, '');
         if (dig.length >= 8) guardarNome(dig.slice(-8), nome);
+        db.salvarContato(id, phone, nome);   // persiste no banco (sobrevive a reinícios)
       }
     } catch (e) {}
   }
+}
+// Carrega os contatos já salvos no banco para a memória (nomes por jid e telefone)
+function carregarContatosSalvos() {
+  try {
+    for (const c of db.listarContatos()) {
+      if (c.jid) guardarNome(c.jid, c.nome);
+      const dig = String(c.phone || c.jid || '').replace(/\D/g, '');
+      if (dig.length >= 8) guardarNome(dig.slice(-8), c.nome);
+    }
+  } catch (e) {}
 }
 // Descobre o melhor nome conhecido para um contato (agenda/pushName), por jid ou telefone
 function nomeSalvo(jid, phone) {
@@ -299,6 +311,7 @@ function getEstado() { return { conectado: estado.conectado, qr: estado.qr, nume
 
 function initWA(h) {
   handlers = { ...handlers, ...h };
+  carregarContatosSalvos();
   conectar().catch((e) => console.error('[wa] erro ao conectar:', e.message));
 }
 

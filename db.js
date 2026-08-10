@@ -32,6 +32,11 @@ db.exec(`
     author TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_messages_jid_ts ON messages(jid, ts);
+  CREATE TABLE IF NOT EXISTS contatos (
+    jid TEXT PRIMARY KEY,
+    phone TEXT,
+    nome TEXT
+  );
 `);
 
 // Migração: adiciona colunas novas em bancos já existentes
@@ -98,6 +103,20 @@ function getMensagem(id) {
   return db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id);
 }
 
+const stmtUpsertContato = db.prepare(`
+  INSERT INTO contatos (jid, phone, nome) VALUES (@jid, @phone, @nome)
+  ON CONFLICT(jid) DO UPDATE SET
+    phone = COALESCE(excluded.phone, contatos.phone),
+    nome  = COALESCE(excluded.nome, contatos.nome)
+`);
+function salvarContato(jid, phone, nome) {
+  if (!jid && !phone) return;
+  try { stmtUpsertContato.run({ jid: jid || phone, phone: phone || null, nome: nome || null }); } catch (e) {}
+}
+function listarContatos() {
+  return db.prepare(`SELECT jid, phone, nome FROM contatos WHERE nome IS NOT NULL AND nome != ''`).all();
+}
+
 function marcarLido(jid) {
   db.prepare(`UPDATE chats SET unread = 0 WHERE jid = ?`).run(jid);
 }
@@ -110,4 +129,4 @@ function definirAtendente(jid, atendente) {
   db.prepare(`UPDATE chats SET assigned_to = ? WHERE jid = ?`).run(atendente, jid);
 }
 
-module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, marcarLido, marcarTodosLidos, definirAtendente };
+module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, marcarLido, marcarTodosLidos, definirAtendente, salvarContato, listarContatos };
