@@ -209,11 +209,15 @@ async function conectar() {
   });
 
   // Conversa lida em outro aparelho/WhatsApp Web -> sincroniza como lida aqui
-  sock.ev.on('chats.update', (updates) => {
-    for (const u of (updates || [])) {
-      try { if (u.id && u.unreadCount === 0) handlers.onRead(u.id); } catch (e) {}
-    }
-  });
+  const marcarLidoUpdate = (u) => {
+    try {
+      if (!u || !u.id) return;
+      const uc = u.unreadCount;
+      if (uc === 0 || uc === '0') handlers.onRead(u.id);
+    } catch (e) {}
+  };
+  sock.ev.on('chats.update', (updates) => { for (const u of (updates || [])) marcarLidoUpdate(u); });
+  sock.ev.on('chats.upsert', (chats) => { for (const u of (chats || [])) marcarLidoUpdate(u); });
 }
 
 // Processa uma mensagem. live=true: baixa mídia, arquiva e emite em tempo real.
