@@ -55,6 +55,12 @@ app.get('/qr', requireAuth, (req, res) => {
   res.json({ conectado: e.conectado, qr: e.qr });
 });
 
+app.post('/logout', requireAuth, async (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: 'Apenas administradores podem desconectar o número.' });
+  try { await wa.logout(); res.json({ ok: true }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/chats', requireAuth, (req, res) => res.json({ chats: db.listarChats() }));
 
 app.get('/messages', requireAuth, (req, res) => {

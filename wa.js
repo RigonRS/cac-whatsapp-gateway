@@ -210,6 +210,15 @@ async function sendMedia(jid, filename, mimetype, buffer, caption) {
   return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: caption || '', type: tipo, mediaName: filename, mediaUrl, ts: Math.floor(Date.now() / 1000), author: 'sistema' };
 }
 
+// Desconecta o número (desloga a sessão). O WhatsApp volta a pedir um novo QR.
+async function logout() {
+  if (!sock) throw new Error('WhatsApp não está conectado.');
+  try { await sock.logout(); } catch (e) { console.error('[wa] logout:', e.message); }
+  estado.conectado = false; estado.numero = null; estado.qr = null;
+  handlers.onStatus(estado);
+  return true;
+}
+
 async function avatarUrl(jid) {
   if (!sock) return null;
   let alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
@@ -229,4 +238,4 @@ function initWA(h) {
   conectar().catch((e) => console.error('[wa] erro ao conectar:', e.message));
 }
 
-module.exports = { initWA, sendText, sendMedia, avatarUrl, getEstado };
+module.exports = { initWA, sendText, sendMedia, avatarUrl, getEstado, logout };
