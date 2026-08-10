@@ -102,6 +102,20 @@ app.post('/send-media', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.post('/forward', requireAuth, async (req, res) => {
+  try {
+    const { toJid, messageId } = req.body || {};
+    if (!toJid || !messageId) return res.status(400).json({ error: 'toJid e messageId são obrigatórios' });
+    const msg = db.getMensagem(messageId);
+    if (!msg) return res.status(404).json({ error: 'Mensagem não encontrada' });
+    const enviado = await wa.forward(toJid, msg);
+    enviado.author = req.atendente;
+    db.registrarMensagem({ ...enviado, nomeContato: null });
+    io.emit('message', enviado);
+    res.json({ ok: true, message: enviado });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/assign', requireAuth, (req, res) => {
   const { jid } = req.body || {};
   if (!jid) return res.status(400).json({ error: 'jid é obrigatório' });

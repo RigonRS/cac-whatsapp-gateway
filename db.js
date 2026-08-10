@@ -94,6 +94,10 @@ function listarMensagens(jid, limite = 500) {
   return db.prepare(`SELECT * FROM messages WHERE jid = ? ORDER BY ts ASC LIMIT ?`).all(jid, limite);
 }
 
+function getMensagem(id) {
+  return db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id);
+}
+
 function marcarLido(jid) {
   db.prepare(`UPDATE chats SET unread = 0 WHERE jid = ?`).run(jid);
 }
@@ -106,4 +110,4 @@ function definirAtendente(jid, atendente) {
   db.prepare(`UPDATE chats SET assigned_to = ? WHERE jid = ?`).run(atendente, jid);
 }
 
-module.exports = { registrarMensagem, listarChats, listarMensagens, marcarLido, marcarTodosLidos, definirAtendente };
+module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, marcarLido, marcarTodosLidos, definirAtendente };

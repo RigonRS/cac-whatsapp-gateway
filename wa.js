@@ -205,8 +205,9 @@ async function processarMensagem(m, live = true) {
       const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
       if (!mediaName) mediaName = nomeArquivoPadrao(conteudo.type, conteudo.mime, ts);
       mediaUrl = salvarMediaLocal(m.key.id, mediaName, buffer);
-      // Só arquiva na pasta do cliente em conversas 1-a-1 (grupo não tem um único cliente)
-      if (!fromMe && !ehGrupo && phone) {
+      // Só arquiva na pasta do cliente em conversas 1-a-1 (grupo não tem um único cliente).
+      // Áudios não são arquivados (a pedido) — ficam só no histórico da conversa.
+      if (!fromMe && !ehGrupo && phone && conteudo.type !== 'audio') {
         const cliente = await clientes.acharPorTelefone(phone);
         if (cliente) {
           await graph.salvarArquivoCliente(cliente.Title, mediaName, buffer);
@@ -266,6 +267,22 @@ async function logout() {
   return true;
 }
 
+// Encaminha uma mensagem já registrada (texto ou mídia) para outro contato
+const MIME_POR_TIPO = { image: 'image/jpeg', video: 'video/mp4', audio: 'audio/ogg', sticker: 'image/webp' };
+async function forward(toJid, msg) {
+  const tipo = msg.type || 'text';
+  if (tipo === 'text' || tipo === 'other' || !msg.media_url) {
+    return sendText(toJid, msg.body || '');
+  }
+  const stored = String(msg.media_url).replace('/media/', '');
+  const buffer = fs.readFileSync(path.join(MEDIA_DIR, stored));
+  const ext = (msg.media_name || '').split('.').pop().toLowerCase();
+  const mime = MIME_POR_TIPO[tipo]
+    || Object.keys(EXT_POR_MIME).find(k => EXT_POR_MIME[k] === ext)
+    || 'application/octet-stream';
+  return sendMedia(toJid, msg.media_name || 'arquivo', mime, buffer, msg.body || undefined);
+}
+
 async function avatarUrl(jid) {
   if (!sock) return null;
   let alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
@@ -285,4 +302,4 @@ function initWA(h) {
   conectar().catch((e) => console.error('[wa] erro ao conectar:', e.message));
 }
 
-module.exports = { initWA, sendText, sendMedia, avatarUrl, getEstado, logout };
+module.exports = { initWA, sendText, sendMedia, forward, avatarUrl, getEstado, logout };
