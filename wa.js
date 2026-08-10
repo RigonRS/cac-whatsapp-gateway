@@ -27,7 +27,7 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
 let sock = null;
 let estado = { conectado: false, qr: null, numero: null };
-let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {} };
+let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {}, onRead: () => {} };
 let meuNome = null;   // nome do próprio número conectado (para não usá-lo como nome de contato)
 
 // Mapa LID (identificador de privacidade) -> telefone real, montado a partir dos contatos
@@ -205,6 +205,13 @@ async function conectar() {
     if (type !== 'notify') return;
     for (const m of messages) {
       try { await processarMensagem(m, true); } catch (e) { console.error('[wa] processar:', e.message); }
+    }
+  });
+
+  // Conversa lida em outro aparelho/WhatsApp Web -> sincroniza como lida aqui
+  sock.ev.on('chats.update', (updates) => {
+    for (const u of (updates || [])) {
+      try { if (u.id && u.unreadCount === 0) handlers.onRead(u.id); } catch (e) {}
     }
   });
 }
