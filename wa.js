@@ -28,6 +28,7 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 let sock = null;
 let estado = { conectado: false, qr: null, numero: null };
 let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {} };
+let meuNome = null;   // nome do próprio número conectado (para não usá-lo como nome de contato)
 
 // Mapa LID (identificador de privacidade) -> telefone real, montado a partir dos contatos
 const LID_PN = {};
@@ -178,7 +179,7 @@ async function conectar() {
       handlers.onStatus(estado);
       console.log('[wa] conectado como', estado.numero);
       // Corrige conversas cujo nome ficou com o nome do próprio número (bug antigo)
-      const meuNome = sock?.user?.name || sock?.user?.verifiedName || null;
+      meuNome = sock?.user?.name || sock?.user?.verifiedName || meuNome;
       if (meuNome) { try { const n = db.limparNomeDono(meuNome); if (n) console.log(`[wa] ${n} nome(s) contaminado(s) corrigido(s)`); } catch (e) {} }
     }
     if (connection === 'close') {
@@ -223,6 +224,12 @@ async function processarMensagem(m, live = true) {
   const conteudo = extrairConteudo(m);
   if (conteudo.type === 'other') return false;
   const phone = ehGrupo ? null : await resolverPhone(jid, m);
+  // Em conversa 1-a-1, o pushName de uma mensagem NOSSA é o nome do próprio número.
+  // Aprende esse nome e limpa conversas que ficaram com ele (correção do bug antigo).
+  if (fromMe && !ehGrupo && pushName && pushName !== meuNome) {
+    meuNome = pushName;
+    try { const n = db.limparNomeDono(meuNome); if (n) console.log(`[wa] ${n} nome(s) contaminado(s) corrigido(s)`); } catch (e) {}
+  }
   // Guarda o pushName para reaproveitar em mensagens futuras deste contato
   if (pushName && !fromMe) { guardarNome(jid, pushName); if (phone) guardarNome(phone.slice(-8), pushName); }
   // Em grupo, o "contato" da conversa é o próprio grupo; quem enviou vai no campo author.

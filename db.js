@@ -119,7 +119,8 @@ function listarContatos() {
 
 // Zera nomes de conversa que ficaram iguais ao nome do próprio número conectado
 function limparNomeDono(nome) {
-  const r = db.prepare(`UPDATE chats SET name = NULL WHERE name = ?`).run(nome);
+  if (!nome) return 0;
+  const r = db.prepare(`UPDATE chats SET name = NULL WHERE TRIM(name) = TRIM(?) COLLATE NOCASE`).run(nome);
   return r.changes || 0;
 }
 
