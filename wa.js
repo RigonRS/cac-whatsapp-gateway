@@ -98,6 +98,20 @@ async function resolverPhone(jid, m) {
   return null;
 }
 
+// Cache de nomes de grupos (assunto/subject do grupo)
+const GRUPOS = {};
+async function nomeGrupo(jid) {
+  if (GRUPOS[jid]) return GRUPOS[jid];
+  try { const md = await sock.groupMetadata(jid); if (md?.subject) { GRUPOS[jid] = md.subject; return md.subject; } } catch (e) {}
+  return null;
+}
+
+// Apaga as credenciais salvas (usado ao deslogar, para gerar um QR novo do zero)
+function limparAuth() {
+  try { for (const f of fs.readdirSync(AUTH_DIR)) fs.rmSync(path.join(AUTH_DIR, f), { recursive: true, force: true }); }
+  catch (e) {}
+}
+
 async function conectar() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
@@ -122,7 +136,7 @@ async function conectar() {
       estado.conectado = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       handlers.onStatus(estado);
-      if (code === DisconnectReason.loggedOut) { console.log('[wa] deslogado — novo QR.'); setTimeout(conectar, 2000); }
+      if (code === DisconnectReason.loggedOut) { console.log('[wa] deslogado — limpando sessão e gerando novo QR.'); limparAuth(); sock = null; setTimeout(conectar, 2000); }
       else { console.log('[wa] reconectando...'); setTimeout(conectar, 3000); }
     }
   });
@@ -149,15 +163,18 @@ async function conectar() {
 // live=false: só grava (usado na importação de histórico). Retorna true se gravou.
 async function processarMensagem(m, live = true) {
   const jid = m.key.remoteJid || '';
-  if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return false;
+  if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return false;
   if (!m.message) return false;
+  const ehGrupo = jid.endsWith('@g.us');
 
   const fromMe = !!m.key.fromMe;
   const ts = Number(m.messageTimestamp) || Math.floor(Date.now() / 1000);
-  const nomeContato = m.pushName || null;
+  const pushName = m.pushName || null;
   const conteudo = extrairConteudo(m);
   if (conteudo.type === 'other') return false;
-  const phone = await resolverPhone(jid, m);
+  // Em grupo, o "contato" da conversa é o próprio grupo; quem enviou vai no campo author.
+  const nomeContato = ehGrupo ? await nomeGrupo(jid) : pushName;
+  const phone = ehGrupo ? null : await resolverPhone(jid, m);
 
   let savedPath = null, mediaName = conteudo.mediaName || null, mediaUrl = null;
   const ehMidia = ['image', 'video', 'audio', 'document', 'sticker'].includes(conteudo.type);
@@ -167,8 +184,9 @@ async function processarMensagem(m, live = true) {
       const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
       if (!mediaName) mediaName = nomeArquivoPadrao(conteudo.type, conteudo.mime, ts);
       mediaUrl = salvarMediaLocal(m.key.id, mediaName, buffer);
-      if (!fromMe) {
-        const cliente = await clientes.acharPorTelefone(phone || jid);
+      // Só arquiva na pasta do cliente em conversas 1-a-1 (grupo não tem um único cliente)
+      if (!fromMe && !ehGrupo && phone) {
+        const cliente = await clientes.acharPorTelefone(phone);
         if (cliente) {
           await graph.salvarArquivoCliente(cliente.Title, mediaName, buffer);
           savedPath = `${graph.DOCS_PATH}/${cliente.Title}/${graph.SUBPASTA_RECEBIDOS}/${mediaName}`;
@@ -182,7 +200,7 @@ async function processarMensagem(m, live = true) {
     id: m.key.id, jid, phone, fromMe,
     body: conteudo.body, type: conteudo.type,
     mediaName, mediaUrl, savedPath, ts,
-    author: fromMe ? 'sistema' : null, nomeContato,
+    author: fromMe ? 'sistema' : (ehGrupo ? pushName : null), nomeContato,
   };
   db.registrarMensagem(registro);
   if (live) handlers.onMessage(registro);
@@ -212,10 +230,18 @@ async function sendMedia(jid, filename, mimetype, buffer, caption) {
 
 // Desconecta o número (desloga a sessão). O WhatsApp volta a pedir um novo QR.
 async function logout() {
-  if (!sock) throw new Error('WhatsApp não está conectado.');
-  try { await sock.logout(); } catch (e) { console.error('[wa] logout:', e.message); }
   estado.conectado = false; estado.numero = null; estado.qr = null;
   handlers.onStatus(estado);
+  try {
+    if (sock) await sock.logout();          // dispara connection.close(loggedOut) -> limpa sessão e gera QR novo
+    else { limparAuth(); setTimeout(conectar, 1000); }
+  } catch (e) {
+    console.error('[wa] logout:', e.message);
+    limparAuth();                           // fallback: limpa e reconecta manualmente
+    try { sock?.end?.(new Error('logout')); } catch (_) {}
+    sock = null;
+    setTimeout(conectar, 1500);
+  }
   return true;
 }
 
