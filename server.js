@@ -63,6 +63,14 @@ app.post('/logout', requireAuth, async (req, res) => {
 
 app.post('/read-all', requireAuth, (req, res) => { db.marcarTodosLidos(); io.emit('read', { all: true }); res.json({ ok: true }); });
 
+app.post('/unread', requireAuth, (req, res) => {
+  const { jid } = req.body || {};
+  if (!jid) return res.status(400).json({ error: 'jid é obrigatório' });
+  db.marcarNaoLido(jid);
+  io.emit('unread', { jid });
+  res.json({ ok: true });
+});
+
 app.get('/chats', requireAuth, (req, res) => res.json({ chats: db.listarChats() }));
 
 app.get('/search', requireAuth, (req, res) => {
@@ -146,6 +154,7 @@ wa.initWA({
   onStatus: (estado) => io.emit('status', { conectado: estado.conectado, qr: estado.qr, numero: estado.numero }),
   onRefresh: () => io.emit('refresh'),
   onRead: (jid) => { db.marcarLido(jid); io.emit('read', { jid }); },
+  onReaction: (d) => io.emit('reaction', d),
 });
 
 server.listen(PORT, () => console.log(`[server] ouvindo na porta ${PORT}`));

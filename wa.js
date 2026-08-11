@@ -27,7 +27,7 @@ const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
 let sock = null;
 let estado = { conectado: false, qr: null, numero: null };
-let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {}, onRead: () => {} };
+let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {}, onRead: () => {}, onReaction: () => {} };
 let meuNome = null;   // nome do próprio número conectado (para não usá-lo como nome de contato)
 
 // Mapa LID (identificador de privacidade) -> telefone real, montado a partir dos contatos
@@ -218,6 +218,19 @@ async function conectar() {
   };
   sock.ev.on('chats.update', (updates) => { for (const u of (updates || [])) marcarLidoUpdate(u); });
   sock.ev.on('chats.upsert', (chats) => { for (const u of (chats || [])) marcarLidoUpdate(u); });
+
+  // Reações às mensagens (emoji)
+  sock.ev.on('messages.reaction', (reactions) => {
+    for (const r of (reactions || [])) {
+      try {
+        const id = r.key?.id; const jid = r.key?.remoteJid;
+        if (!id) continue;
+        const emoji = r.reaction?.text || '';
+        db.setReacao(id, emoji);
+        handlers.onReaction({ id, jid, emoji });
+      } catch (e) {}
+    }
+  });
 }
 
 // Processa uma mensagem. live=true: baixa mídia, arquiva e emite em tempo real.

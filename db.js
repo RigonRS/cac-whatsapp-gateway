@@ -47,6 +47,7 @@ function addCol(table, col, type) {
 addCol('chats', 'phone', 'TEXT');
 addCol('messages', 'phone', 'TEXT');
 addCol('messages', 'media_url', 'TEXT');
+addCol('messages', 'reaction', 'TEXT');
 
 const stmtUpsertChat = db.prepare(`
   INSERT INTO chats (jid, name, phone, last_message, last_ts, unread)
@@ -140,8 +141,16 @@ function marcarTodosLidos() {
   db.prepare(`UPDATE chats SET unread = 0 WHERE unread > 0`).run();
 }
 
+function marcarNaoLido(jid) {
+  db.prepare(`UPDATE chats SET unread = CASE WHEN unread > 0 THEN unread ELSE 1 END WHERE jid = ?`).run(jid);
+}
+
+function setReacao(id, emoji) {
+  db.prepare(`UPDATE messages SET reaction = ? WHERE id = ?`).run(emoji || null, id);
+}
+
 function definirAtendente(jid, atendente) {
   db.prepare(`UPDATE chats SET assigned_to = ? WHERE jid = ?`).run(atendente, jid);
 }
 
-module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, marcarLido, marcarTodosLidos, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens };
+module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, marcarLido, marcarTodosLidos, marcarNaoLido, setReacao, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens };
