@@ -88,10 +88,13 @@ const EXT_POR_MIME = {
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
 };
 
-function nomeArquivoPadrao(tipo, mime, ts) {
+function nomeArquivoPadrao(tipo, mime, ts, id) {
   const ext = EXT_POR_MIME[mime] || (mime && mime.split('/')[1]) || 'bin';
   const data = new Date(ts * 1000).toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  return `${tipo}-${data}.${ext}`;
+  // Sufixo único (parte do id da mensagem) para não sobrescrever quando várias
+  // mídias chegam no mesmo segundo (ex.: várias imagens enviadas juntas)
+  const uniq = id ? '-' + String(id).replace(/[^a-zA-Z0-9]/g, '').slice(-6) : '';
+  return `${tipo}-${data}${uniq}.${ext}`;
 }
 
 function salvarMediaLocal(id, filename, buffer) {
@@ -296,7 +299,7 @@ async function processarMensagem(m, live = true) {
   if (ehMidia && live) {
     try {
       const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-      if (!mediaName) mediaName = nomeArquivoPadrao(conteudo.type, conteudo.mime, ts);
+      if (!mediaName) mediaName = nomeArquivoPadrao(conteudo.type, conteudo.mime, ts, m.key.id);
       mediaUrl = salvarMediaLocal(m.key.id, mediaName, buffer);
       // Só arquiva na pasta do cliente em conversas 1-a-1 (grupo não tem um único cliente).
       // Áudios não são arquivados (a pedido) — ficam só no histórico da conversa.
