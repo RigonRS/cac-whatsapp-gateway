@@ -48,6 +48,9 @@ addCol('chats', 'phone', 'TEXT');
 addCol('messages', 'phone', 'TEXT');
 addCol('messages', 'media_url', 'TEXT');
 addCol('messages', 'reaction', 'TEXT');
+addCol('messages', 'raw', 'TEXT');
+addCol('messages', 'reply_id', 'TEXT');
+addCol('messages', 'reply_body', 'TEXT');
 
 const stmtUpsertChat = db.prepare(`
   INSERT INTO chats (jid, name, phone, last_message, last_ts, unread)
@@ -61,8 +64,8 @@ const stmtUpsertChat = db.prepare(`
 `);
 
 const stmtInsertMsg = db.prepare(`
-  INSERT OR IGNORE INTO messages (id, jid, phone, from_me, body, type, media_name, media_url, saved_path, ts, author)
-  VALUES (@id, @jid, @phone, @from_me, @body, @type, @media_name, @media_url, @saved_path, @ts, @author)
+  INSERT OR IGNORE INTO messages (id, jid, phone, from_me, body, type, media_name, media_url, saved_path, ts, author, raw, reply_id, reply_body)
+  VALUES (@id, @jid, @phone, @from_me, @body, @type, @media_name, @media_url, @saved_path, @ts, @author, @raw, @reply_id, @reply_body)
 `);
 
 function registrarMensagem(msg) {
@@ -78,6 +81,9 @@ function registrarMensagem(msg) {
     saved_path: msg.savedPath || null,
     ts: msg.ts,
     author: msg.author || null,
+    raw: msg.raw || null,
+    reply_id: msg.replyId || null,
+    reply_body: msg.replyBody || null,
   });
   const resumo = (msg.type && msg.type !== 'text' && msg.type !== 'other')
     ? `[${msg.type}] ${msg.body || msg.mediaName || ''}`.trim()

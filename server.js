@@ -103,10 +103,18 @@ app.get('/avatar', requireAuth, async (req, res) => {
 
 app.post('/send', requireAuth, async (req, res) => {
   try {
-    const { jid, text } = req.body || {};
+    const { jid, text, quotedId } = req.body || {};
     if (!jid || !text) return res.status(400).json({ error: 'jid e text são obrigatórios' });
-    const enviado = await wa.sendText(jid, text);
+    let quoted = null, replyBody = null;
+    if (quotedId) {
+      const q = db.getMensagem(quotedId);
+      if (q && q.raw) { try { quoted = JSON.parse(q.raw); } catch (e) {} }
+      if (q) replyBody = (q.body || '').slice(0, 140) || (q.type && q.type !== 'text' ? `[${q.type}]` : null);
+    }
+    const enviado = await wa.sendText(jid, text, quoted);
     enviado.author = req.atendente;
+    enviado.replyId = quotedId || null;
+    enviado.replyBody = replyBody;
     db.registrarMensagem({ ...enviado, nomeContato: null });
     io.emit('message', enviado);
     res.json({ ok: true, message: enviado });
@@ -150,7 +158,12 @@ app.post('/assign', requireAuth, (req, res) => {
 
 // ---- WhatsApp: liga os eventos ao banco e ao tempo real ----
 wa.initWA({
-  onMessage: (registro) => { db.registrarMensagem(registro); io.emit('message', registro); },
+  onMessage: (registro) => {
+    db.registrarMensagem(registro);
+    io.emit('message', registro);
+    // Se a mensagem foi enviada por nós (de outro aparelho), a conversa foi lida -> sincroniza
+    if (registro.fromMe) { db.marcarLido(registro.jid); io.emit('read', { jid: registro.jid }); }
+  },
   onStatus: (estado) => io.emit('status', { conectado: estado.conectado, qr: estado.qr, numero: estado.numero }),
   onRefresh: () => io.emit('refresh'),
   onRead: (jid) => { db.marcarLido(jid); io.emit('read', { jid }); },

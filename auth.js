@@ -48,6 +48,7 @@ function nomeAtendente(decoded) {
   const local = email.split('@')[0];
   if (local.includes('recepcao')) return 'Andrieli';
   if (local.includes('geison')) return 'Geison';
+  if (local.includes('janaina')) return 'Janaína';
   if (local.includes('priscila')) return 'Priscila';
   if (local.includes('matheus')) return 'Matheus';
   if (local.includes('simone')) return 'Simone';

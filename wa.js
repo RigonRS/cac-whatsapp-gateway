@@ -116,6 +116,30 @@ function desembrulhar(message) {
   return msg;
 }
 
+// Texto legível de uma mensagem (para exibir citações/respostas)
+function textoDeMensagem(message) {
+  const msg = desembrulhar(message || {});
+  return msg.conversation
+    || msg.extendedTextMessage?.text
+    || msg.imageMessage?.caption
+    || msg.videoMessage?.caption
+    || msg.documentMessage?.caption
+    || (msg.imageMessage ? '[imagem]' : '')
+    || (msg.videoMessage ? '[vídeo]' : '')
+    || (msg.audioMessage ? '[áudio]' : '')
+    || (msg.documentMessage ? '[documento]' : '')
+    || (msg.stickerMessage ? '[figurinha]' : '')
+    || '';
+}
+// contextInfo da mensagem (traz a citação/resposta)
+function getContextInfo(message) {
+  const msg = message || {};
+  for (const k of Object.keys(msg)) {
+    if (msg[k] && typeof msg[k] === 'object' && msg[k].contextInfo) return msg[k].contextInfo;
+  }
+  return null;
+}
+
 function extrairConteudo(m) {
   const msg = m.message || {};
   if (msg.conversation) return { type: 'text', body: msg.conversation };
@@ -283,22 +307,33 @@ async function processarMensagem(m, live = true) {
     } catch (e) { console.error('[wa] mídia:', e.message); }
   }
 
+  // Citação/resposta a outra mensagem
+  const ctx = getContextInfo(m.message);
+  let replyId = null, replyBody = null;
+  if (ctx && ctx.quotedMessage) {
+    replyId = ctx.stanzaId || null;
+    replyBody = textoDeMensagem(ctx.quotedMessage).slice(0, 140) || null;
+  }
+
   const registro = {
     id: m.key.id, jid, phone, fromMe,
     body: conteudo.body, type: conteudo.type,
     mediaName, mediaUrl, savedPath, ts,
     author: fromMe ? 'sistema' : (ehGrupo ? pushName : null), nomeContato,
+    raw: JSON.stringify({ key: m.key, message: m.message }),
+    replyId, replyBody,
   };
   db.registrarMensagem(registro);
   if (live) handlers.onMessage(registro);
   return true;
 }
 
-async function sendText(jid, texto) {
+async function sendText(jid, texto, quoted) {
   if (!sock || !estado.conectado) throw new Error('WhatsApp não está conectado.');
   const alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
-  const r = await sock.sendMessage(alvo, { text: texto });
-  return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: texto, type: 'text', ts: Math.floor(Date.now() / 1000), author: 'sistema' };
+  const opts = quoted ? { quoted } : {};
+  const r = await sock.sendMessage(alvo, { text: texto }, opts);
+  return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: texto, type: 'text', ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: JSON.stringify({ key: r.key, message: r.message }) };
 }
 
 async function sendMedia(jid, filename, mimetype, buffer, caption) {
