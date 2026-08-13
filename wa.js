@@ -131,6 +131,10 @@ function textoDeMensagem(message) {
     || (msg.stickerMessage ? '[figurinha]' : '')
     || '';
 }
+// Serializa {key,message} com segurança (evita quebrar o salvamento se houver algo não serializável)
+function rawJSON(key, message) {
+  try { return JSON.stringify({ key, message }); } catch (e) { return null; }
+}
 // contextInfo da mensagem (traz a citação/resposta)
 function getContextInfo(message) {
   const msg = message || {};
@@ -320,7 +324,7 @@ async function processarMensagem(m, live = true) {
     body: conteudo.body, type: conteudo.type,
     mediaName, mediaUrl, savedPath, ts,
     author: fromMe ? 'sistema' : (ehGrupo ? pushName : null), nomeContato,
-    raw: JSON.stringify({ key: m.key, message: m.message }),
+    raw: rawJSON(m.key, m.message),
     replyId, replyBody,
   };
   db.registrarMensagem(registro);
@@ -333,7 +337,7 @@ async function sendText(jid, texto, quoted) {
   const alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
   const opts = quoted ? { quoted } : {};
   const r = await sock.sendMessage(alvo, { text: texto }, opts);
-  return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: texto, type: 'text', ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: JSON.stringify({ key: r.key, message: r.message }) };
+  return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: texto, type: 'text', ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: rawJSON(r.key, r.message) };
 }
 
 async function sendMedia(jid, filename, mimetype, buffer, caption) {
