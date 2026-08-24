@@ -297,21 +297,37 @@ async function processarMensagem(m, live = true) {
   const ehMidia = ['image', 'video', 'audio', 'document', 'sticker'].includes(conteudo.type);
 
   if (ehMidia && live) {
-    try {
-      const buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-      if (!mediaName) mediaName = nomeArquivoPadrao(conteudo.type, conteudo.mime, ts, m.key.id);
-      mediaUrl = salvarMediaLocal(m.key.id, mediaName, buffer);
-      // Só arquiva na pasta do cliente em conversas 1-a-1 (grupo não tem um único cliente).
-      // Áudios não são arquivados (a pedido) — ficam só no histórico da conversa.
-      if (!fromMe && !ehGrupo && phone && conteudo.type !== 'audio') {
-        const cliente = await clientes.acharPorTelefone(phone);
-        if (cliente) {
-          await graph.salvarArquivoCliente(cliente.Title, mediaName, buffer);
-          savedPath = `${graph.DOCS_PATH}/${cliente.Title}/${graph.SUBPASTA_RECEBIDOS}/${mediaName}`;
-          console.log(`[wa] arquivo "${mediaName}" salvo na pasta de ${cliente.Title}`);
-        }
+    // Baixa a mídia. Arquivos ENCAMINHADOS costumam falhar na 1ª tentativa
+    // (o WhatsApp precisa re-hospedar a mídia original), então tentamos algumas vezes.
+    let buffer = null;
+    for (let tent = 1; tent <= 3 && !buffer; tent++) {
+      try {
+        buffer = await downloadMediaMessage(m, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+      } catch (e) {
+        console.error(`[wa] download mídia (tentativa ${tent}/3):`, e.message);
+        if (tent < 3) await new Promise(r => setTimeout(r, 1500 * tent));
       }
-    } catch (e) { console.error('[wa] mídia:', e.message); }
+    }
+    if (buffer) {
+      try {
+        if (!mediaName) mediaName = nomeArquivoPadrao(conteudo.type, conteudo.mime, ts, m.key.id);
+        mediaUrl = salvarMediaLocal(m.key.id, mediaName, buffer);
+        // Só arquiva na pasta do cliente em conversas 1-a-1 (grupo não tem um único cliente).
+        // Áudios não são arquivados (a pedido) — ficam só no histórico da conversa.
+        if (!fromMe && !ehGrupo && phone && conteudo.type !== 'audio') {
+          const cliente = await clientes.acharPorTelefone(phone);
+          if (cliente) {
+            await graph.salvarArquivoCliente(cliente.Title, mediaName, buffer);
+            savedPath = `${graph.DOCS_PATH}/${cliente.Title}/${graph.SUBPASTA_RECEBIDOS}/${mediaName}`;
+            console.log(`[wa] arquivo "${mediaName}" salvo na pasta de ${cliente.Title}`);
+          } else {
+            console.warn(`[wa] mídia recebida de ${phone} sem cliente correspondente — não arquivada.`);
+          }
+        }
+      } catch (e) { console.error('[wa] arquivar mídia:', e.message); }
+    } else {
+      console.error(`[wa] não foi possível baixar a mídia (${conteudo.type}) da mensagem ${m.key.id}.`);
+    }
   }
 
   // Citação/resposta a outra mensagem
