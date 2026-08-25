@@ -115,6 +115,7 @@ app.post('/send', requireAuth, async (req, res) => {
     enviado.author = req.atendente;
     enviado.replyId = quotedId || null;
     enviado.replyBody = replyBody;
+    if (!enviado.phone) enviado.phone = db.getChatPhone(jid); // agrupa @lid x @s.whatsapp.net
     db.registrarMensagem({ ...enviado, nomeContato: null });
     io.emit('message', enviado);
     res.json({ ok: true, message: enviado });
@@ -128,6 +129,7 @@ app.post('/send-media', requireAuth, async (req, res) => {
     const buffer = Buffer.from(dataBase64, 'base64');
     const enviado = await wa.sendMedia(jid, filename || 'arquivo', mimetype || 'application/octet-stream', buffer, caption);
     enviado.author = req.atendente;
+    if (!enviado.phone) enviado.phone = db.getChatPhone(jid);
     db.registrarMensagem({ ...enviado, nomeContato: null });
     io.emit('message', enviado);
     res.json({ ok: true, message: enviado });
@@ -142,6 +144,7 @@ app.post('/forward', requireAuth, async (req, res) => {
     if (!msg) return res.status(404).json({ error: 'Mensagem não encontrada' });
     const enviado = await wa.forward(toJid, msg);
     enviado.author = req.atendente;
+    if (!enviado.phone) enviado.phone = db.getChatPhone(toJid);
     db.registrarMensagem({ ...enviado, nomeContato: null });
     io.emit('message', enviado);
     res.json({ ok: true, message: enviado });

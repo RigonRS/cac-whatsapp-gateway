@@ -110,6 +110,12 @@ function getMensagem(id) {
   return db.prepare(`SELECT * FROM messages WHERE id = ?`).get(id);
 }
 
+// Telefone já conhecido de uma conversa (para agrupar mensagens enviadas ao mesmo contato)
+function getChatPhone(jid) {
+  const r = db.prepare(`SELECT phone FROM chats WHERE jid = ?`).get(jid);
+  return (r && r.phone) ? r.phone : null;
+}
+
 const stmtUpsertContato = db.prepare(`
   INSERT INTO contatos (jid, phone, nome) VALUES (@jid, @phone, @nome)
   ON CONFLICT(jid) DO UPDATE SET
@@ -159,4 +165,4 @@ function definirAtendente(jid, atendente) {
   db.prepare(`UPDATE chats SET assigned_to = ? WHERE jid = ?`).run(atendente, jid);
 }
 
-module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, marcarLido, marcarTodosLidos, marcarNaoLido, setReacao, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens };
+module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, getChatPhone, marcarLido, marcarTodosLidos, marcarNaoLido, setReacao, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens };
