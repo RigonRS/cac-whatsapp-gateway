@@ -26,8 +26,25 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
 
 let sock = null;
-let estado = { conectado: false, qr: null, numero: null };
-let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {}, onRead: () => {}, onReaction: () => {} };
+let estado = { conectado: false, qr: null, numero: null, sincronizando: false, syncProgress: null };
+let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {}, onRead: () => {}, onReaction: () => {}, onSync: () => {} };
+
+// ---- Controle da sincronização de histórico (barra de progresso no front) ----
+let syncTimer = null;
+function marcarSyncAtivo(progress) {
+  estado.sincronizando = true;
+  if (typeof progress === 'number') estado.syncProgress = progress;
+  handlers.onSync({ sincronizando: true, progress: estado.syncProgress });
+  // Segurança: se nenhum lote novo chegar em 45s, considera a sincronização concluída.
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(marcarSyncFim, 45000);
+}
+function marcarSyncFim() {
+  if (syncTimer) { clearTimeout(syncTimer); syncTimer = null; }
+  if (!estado.sincronizando) return;
+  estado.sincronizando = false; estado.syncProgress = null;
+  handlers.onSync({ sincronizando: false, progress: 100 });
+}
 let meuNome = null;   // nome do próprio número conectado (para não usá-lo como nome de contato)
 
 // Mapa LID (identificador de privacidade) -> telefone real, montado a partir dos contatos
@@ -215,6 +232,7 @@ async function conectar() {
     }
     if (connection === 'close') {
       estado.conectado = false;
+      marcarSyncFim();
       const code = lastDisconnect?.error?.output?.statusCode;
       handlers.onStatus(estado);
       if (code === DisconnectReason.loggedOut) { console.log('[wa] deslogado — limpando sessão e gerando novo QR.'); limparAuth(); sock = null; setTimeout(conectar, 2000); }
@@ -223,17 +241,22 @@ async function conectar() {
   });
 
   // Importa histórico enviado pelo WhatsApp ao conectar
-  sock.ev.on('messaging-history.set', async ({ messages, contacts }) => {
+  sock.ev.on('messaging-history.set', async ({ messages, contacts, progress, isLatest }) => {
     registrarContatos(contacts);
+    marcarSyncAtivo(progress);
     let n = 0;
     for (const m of (messages || [])) {
       try { if (await processarMensagem(m, false)) n++; } catch (e) {}
     }
-    if (n) { console.log(`[wa] histórico importado: ${n} mensagens`); handlers.onRefresh(); }
+    if (n) { console.log(`[wa] histórico importado: ${n} mensagens${typeof progress === 'number' ? ` (${progress}%)` : ''}`); handlers.onRefresh(); }
+    if (isLatest) marcarSyncFim();
   });
 
+  // type 'notify' = mensagem nova; type 'append' = mensagem adicionada ao histórico,
+  // normalmente enviada/recebida por OUTRO aparelho do mesmo número. Ambos precisam
+  // aparecer aqui (senão "mensagens enviadas por outros dispositivos" somem).
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
+    if (type !== 'notify' && type !== 'append') return;
     for (const m of messages) {
       try { await processarMensagem(m, true); } catch (e) { console.error('[wa] processar:', e.message); }
     }
@@ -418,7 +441,7 @@ async function avatarUrl(jid) {
   return null;
 }
 
-function getEstado() { return { conectado: estado.conectado, qr: estado.qr, numero: estado.numero }; }
+function getEstado() { return { conectado: estado.conectado, qr: estado.qr, numero: estado.numero, sincronizando: estado.sincronizando, syncProgress: estado.syncProgress }; }
 
 function initWA(h) {
   handlers = { ...handlers, ...h };

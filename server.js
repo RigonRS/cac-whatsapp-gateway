@@ -167,10 +167,11 @@ wa.initWA({
     // Se a mensagem foi enviada por nós (de outro aparelho), a conversa foi lida -> sincroniza
     if (registro.fromMe) { db.marcarLido(registro.jid); io.emit('read', { jid: registro.jid }); }
   },
-  onStatus: (estado) => io.emit('status', { conectado: estado.conectado, qr: estado.qr, numero: estado.numero }),
+  onStatus: (estado) => io.emit('status', { conectado: estado.conectado, qr: estado.qr, numero: estado.numero, sincronizando: estado.sincronizando, syncProgress: estado.syncProgress }),
   onRefresh: () => io.emit('refresh'),
   onRead: (jid) => { db.marcarLido(jid); io.emit('read', { jid }); },
   onReaction: (d) => io.emit('reaction', d),
+  onSync: (info) => io.emit('sync', info),
 });
 
 server.listen(PORT, () => console.log(`[server] ouvindo na porta ${PORT}`));
