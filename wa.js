@@ -300,6 +300,21 @@ function limparAuth() {
   catch (e) {}
 }
 
+// Reconexão centralizada (evita reconexões duplicadas concorrentes)
+let _logoutIntencional = false;
+let _reconectAgendado = false;
+function agendarReconexao(ms, limpar) {
+  if (_reconectAgendado) return;
+  _reconectAgendado = true;
+  setTimeout(() => {
+    _reconectAgendado = false;
+    try { sock && sock.end && sock.end(new Error('reconnect')); } catch (_) {}
+    sock = null;
+    if (limpar) limparAuth();
+    conectar().catch((e) => console.error('[wa] reconectar:', e.message));
+  }, ms);
+}
+
 async function conectar() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
@@ -329,8 +344,14 @@ async function conectar() {
       marcarSyncFim();
       const code = lastDisconnect?.error?.output?.statusCode;
       handlers.onStatus(estado);
-      if (code === DisconnectReason.loggedOut) { console.log('[wa] deslogado — limpando sessão e gerando novo QR.'); limparAuth(); sock = null; setTimeout(conectar, 2000); }
-      else { console.log('[wa] reconectando...'); setTimeout(conectar, 3000); }
+      if (code === DisconnectReason.loggedOut || _logoutIntencional) {
+        _logoutIntencional = false;
+        console.log('[wa] deslogado — limpando sessão e gerando novo QR.');
+        agendarReconexao(2000, true);
+      } else {
+        console.log('[wa] reconectando...');
+        agendarReconexao(3000, false);
+      }
     }
   });
 
@@ -494,19 +515,17 @@ async function sendMedia(jid, filename, mimetype, buffer, caption) {
 }
 
 // Desconecta o número (desloga a sessão). O WhatsApp volta a pedir um novo QR.
+// NÃO depende do sock.logout() concluir — a sessão pode estar travada/corrompida.
 async function logout() {
   estado.conectado = false; estado.numero = null; estado.qr = null;
+  saude.precisaReparear = false; saude.badMacTimestamps = []; saude.reconexoesAuto = [];
   handlers.onStatus(estado);
-  try {
-    if (sock) await sock.logout();          // dispara connection.close(loggedOut) -> limpa sessão e gera QR novo
-    else { limparAuth(); setTimeout(conectar, 1000); }
-  } catch (e) {
-    console.error('[wa] logout:', e.message);
-    limparAuth();                           // fallback: limpa e reconecta manualmente
-    try { sock?.end?.(new Error('logout')); } catch (_) {}
-    sock = null;
-    setTimeout(conectar, 1500);
-  }
+  _logoutIntencional = true;
+  // Tenta deslogar direito (fire-and-forget, com timeout implícito pela rede de segurança abaixo)
+  try { if (sock && sock.logout) sock.logout().catch(() => {}); } catch (e) {}
+  // Rede de segurança: limpa as credenciais e reconecta em ~1,5s, gerando um QR novo,
+  // mesmo que o logout normal trave por causa da sessão corrompida.
+  agendarReconexao(1500, true);
   return true;
 }
 
