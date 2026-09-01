@@ -23,7 +23,100 @@ const AUTH_DIR = process.env.AUTH_DIR || path.join(DATA_DIR, 'auth');
 const MEDIA_DIR = path.join(DATA_DIR, 'media');
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
-const logger = pino({ level: process.env.LOG_LEVEL || 'warn' });
+// ============================================================
+// SAÚDE DA CONEXÃO — detecta sessão corrompida (Bad MAC / falha de
+// descriptografia / init queries travado) e tenta se recuperar sozinho.
+// ============================================================
+const saude = {
+  badMacTimestamps: [],   // horários dos erros de sessão recentes
+  ultimaMsgRecebida: null,
+  ultimoErroDecrypt: null,
+  reconexoesAuto: [],     // horários das reconexões automáticas (janela de 30 min)
+  precisaReparear: false, // true = erros persistem mesmo após reconectar -> precisa QR
+  ultimaConexao: null,
+};
+const _RE_ERRO_SESSAO = /Bad MAC|failed to decrypt|No matching sessions|init queries|closed session/i;
+function _textoLog(args) {
+  try {
+    return (args || []).map(a => {
+      if (a == null) return '';
+      if (typeof a === 'string') return a;
+      if (a instanceof Error) return (a.message || '') + ' ' + (a.stack || '');
+      if (a.err && a.err.message) return a.err.message;
+      if (a.message) return a.message;
+      try { return JSON.stringify(a); } catch (e) { return String(a); }
+    }).join(' ');
+  } catch (e) { return ''; }
+}
+function contarErroSessao(args) {
+  try {
+    if (_RE_ERRO_SESSAO.test(_textoLog(args))) {
+      const now = Date.now();
+      saude.badMacTimestamps.push(now);
+      saude.ultimoErroDecrypt = now;
+      if (saude.badMacTimestamps.length > 500) saude.badMacTimestamps = saude.badMacTimestamps.slice(-500);
+    }
+  } catch (e) {}
+}
+function _badMacRecentes(janelaMs) {
+  const now = Date.now();
+  return saude.badMacTimestamps.filter(t => now - t < janelaMs).length;
+}
+
+// Logger pino que conta os erros de sessão (para o watchdog de saúde)
+const _basePino = pino({ level: process.env.LOG_LEVEL || 'warn' });
+function _wrapLogger(inst) {
+  const mk = (name) => (...args) => { if (name === 'error' || name === 'warn' || name === 'fatal') contarErroSessao(args); return inst[name](...args); };
+  const w = {
+    silent: (...a) => (inst.silent ? inst.silent(...a) : undefined),
+    trace: mk('trace'), debug: mk('debug'), info: mk('info'),
+    warn: mk('warn'), error: mk('error'), fatal: mk('fatal'),
+    child: (b) => _wrapLogger(inst.child(b)),
+  };
+  Object.defineProperty(w, 'level', { get: () => inst.level, set: (v) => { try { inst.level = v; } catch (e) {} }, enumerable: true, configurable: true });
+  return w;
+}
+const logger = _wrapLogger(_basePino);
+
+// Também captura os "Bad MAC" que o libsignal imprime direto no console.error
+const _origConsoleError = console.error.bind(console);
+console.error = (...args) => { try { contarErroSessao(args); } catch (e) {} return _origConsoleError(...args); };
+
+// Watchdog: reinicia a conexão se houver surto de erros de sessão sem receber
+// mensagens; após 3 tentativas sem sucesso, marca que precisa re-parear (QR).
+let _watchdogAtivo = false;
+function iniciarWatchdogSaude() {
+  if (_watchdogAtivo) return;
+  _watchdogAtivo = true;
+  setInterval(() => { try { verificarSaudeConexao(); } catch (e) {} }, 60 * 1000);
+}
+function verificarSaudeConexao() {
+  const now = Date.now();
+  saude.reconexoesAuto = saude.reconexoesAuto.filter(t => now - t < 30 * 60 * 1000);
+  const recentes = _badMacRecentes(3 * 60 * 1000);
+  const recebendoOk = saude.ultimaMsgRecebida && (now - saude.ultimaMsgRecebida < 3 * 60 * 1000);
+  if (recentes < 15 || recebendoOk || saude.precisaReparear) return;
+  if (saude.reconexoesAuto.length < 3) {
+    console.log(`[wa][saude] surto de ${recentes} erros de sessao em 3min sem receber mensagens — reiniciando a conexao (tentativa ${saude.reconexoesAuto.length + 1}/3).`);
+    saude.reconexoesAuto.push(now);
+    saude.badMacTimestamps = [];
+    try { sock && sock.end && sock.end(new Error('reinicio-automatico-saude')); } catch (e) {}
+  } else {
+    console.error('[wa][saude] erros de sessao persistentes apos 3 reconexoes — sessao corrompida. E NECESSARIO RE-PAREAR (desconectar + escanear o QR).');
+    saude.precisaReparear = true;
+  }
+}
+function getSaude() {
+  const now = Date.now();
+  return {
+    precisaReparear: saude.precisaReparear,
+    badMac3min: _badMacRecentes(3 * 60 * 1000),
+    badMac10min: _badMacRecentes(10 * 60 * 1000),
+    ultimaMsgRecebida: saude.ultimaMsgRecebida,
+    minutosSemReceber: saude.ultimaMsgRecebida ? Math.round((now - saude.ultimaMsgRecebida) / 60000) : null,
+    reconexoesAuto30min: saude.reconexoesAuto.length,
+  };
+}
 
 let sock = null;
 let estado = { conectado: false, qr: null, numero: null, sincronizando: false, syncProgress: null };
@@ -224,6 +317,7 @@ async function conectar() {
     if (connection === 'open') {
       estado.conectado = true; estado.qr = null;
       estado.numero = sock?.user?.id ? sock.user.id.split(':')[0].split('@')[0] : null;
+      saude.ultimaConexao = Date.now();
       handlers.onStatus(estado);
       console.log('[wa] conectado como', estado.numero);
       // Corrige conversas cujo nome ficou com o nome do próprio número (bug antigo)
@@ -370,6 +464,9 @@ async function processarMensagem(m, live = true) {
     replyId, replyBody,
   };
   db.registrarMensagem(registro);
+  // Recebeu/processou uma mensagem de verdade: a conexão está saudável.
+  saude.ultimaMsgRecebida = Date.now();
+  if (saude.precisaReparear) saude.precisaReparear = false;
   if (live) handlers.onMessage(registro);
   return true;
 }
@@ -446,7 +543,8 @@ function getEstado() { return { conectado: estado.conectado, qr: estado.qr, nume
 function initWA(h) {
   handlers = { ...handlers, ...h };
   carregarContatosSalvos();
+  iniciarWatchdogSaude();
   conectar().catch((e) => console.error('[wa] erro ao conectar:', e.message));
 }
 
-module.exports = { initWA, sendText, sendMedia, forward, avatarUrl, getEstado, logout };
+module.exports = { initWA, sendText, sendMedia, forward, avatarUrl, getEstado, getSaude, logout };

@@ -46,7 +46,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 
 app.get('/status', requireAuth, (req, res) => {
   const e = wa.getEstado();
-  res.json({ conectado: e.conectado, numero: e.numero });
+  res.json({ conectado: e.conectado, numero: e.numero, sincronizando: e.sincronizando, saude: wa.getSaude() });
 });
 
 app.get('/qr', requireAuth, (req, res) => {
