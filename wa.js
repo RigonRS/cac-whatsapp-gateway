@@ -319,7 +319,22 @@ async function conectar() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
 
-  sock = makeWASocket({ version, auth: state, printQRInTerminal: false, logger, syncFullHistory: true });
+  // syncFullHistory:false -> conexão leve e confiável (evita o "init queries timed out" que
+  // corrompia a sessão e deixava o ENVIO quebrado / "Aguardando mensagem"). O histórico recente
+  // ainda é sincronizado normalmente. markOnlineOnConnect:false -> número aparece offline (gateway).
+  // getMessage -> quando o destinatário não consegue decodificar e pede o reenvio, o Baileys
+  // busca aqui o conteúdo original (guardado no banco) e reenvia — evita "Aguardando mensagem".
+  sock = makeWASocket({
+    version, auth: state, printQRInTerminal: false, logger,
+    syncFullHistory: false, markOnlineOnConnect: false,
+    getMessage: async (key) => {
+      try {
+        const m = db.getMensagem(key && key.id);
+        if (m && m.raw) { const p = JSON.parse(m.raw); if (p && p.message) return p.message; }
+      } catch (e) {}
+      return undefined;
+    },
+  });
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -511,7 +526,7 @@ async function sendMedia(jid, filename, mimetype, buffer, caption) {
   else { content = { document: buffer, fileName: filename, mimetype: mt, caption: caption || undefined }; tipo = 'document'; }
   const r = await sock.sendMessage(alvo, content);
   const mediaUrl = salvarMediaLocal(r.key.id, filename, buffer);
-  return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: caption || '', type: tipo, mediaName: filename, mediaUrl, ts: Math.floor(Date.now() / 1000), author: 'sistema' };
+  return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: caption || '', type: tipo, mediaName: filename, mediaUrl, ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: rawJSON(r.key, r.message) };
 }
 
 // Desconecta o número (desloga a sessão). O WhatsApp volta a pedir um novo QR.
