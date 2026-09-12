@@ -8,7 +8,7 @@ const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
 
-const { requireAuth, verifyIdToken, nomeAtendente } = require('./auth');
+const { requireAuth, verifyIdToken, nomeAtendente, atendenteAutorizado } = require('./auth');
 const db = require('./db');
 const wa = require('./wa');
 
@@ -28,6 +28,7 @@ const io = new Server(server, { cors: { origin: corsOrigin } });
 io.use(async (socket, next) => {
   try {
     const decoded = await verifyIdToken(socket.handshake.auth?.token);
+    if (!atendenteAutorizado(decoded)) return next(new Error('Acesso não autorizado'));
     socket.atendente = nomeAtendente(decoded);
     next();
   } catch (e) { next(new Error('Não autorizado')); }

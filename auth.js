@@ -60,12 +60,32 @@ function isAdmin(nome) {
   return ADMINS.includes(nome);
 }
 
+// Allowlist de quem pode usar a Central de WhatsApp (e-mails/UPN autorizados).
+// Mesmo com um token válido do tenant, só estes e-mails têm acesso.
+const ATENDENTES_AUTORIZADOS = new Set([
+  'simone@simonebpegoraro.onmicrosoft.com',
+  'priscila@simonebpegoraro.onmicrosoft.com',
+  'matheus@simonebpegoraro.onmicrosoft.com',
+  'recepcao@simonebpegoraro.onmicrosoft.com',
+  'geison@simonebpegoraro.onmicrosoft.com',
+  'janaina@simonebpegoraro.onmicrosoft.com',
+]);
+function emailDoToken(decoded) {
+  return String(decoded.preferred_username || decoded.email || '').toLowerCase().trim();
+}
+function atendenteAutorizado(decoded) {
+  return ATENDENTES_AUTORIZADOS.has(emailDoToken(decoded));
+}
+
 // Middleware Express: exige um id_token válido em Authorization: Bearer <token>
 async function requireAuth(req, res, next) {
   try {
     const h = req.headers.authorization || '';
     const token = h.startsWith('Bearer ') ? h.slice(7) : (req.query.token || '');
     const decoded = await verifyIdToken(token);
+    if (!atendenteAutorizado(decoded)) {
+      return res.status(403).json({ error: 'Acesso não autorizado à Central de WhatsApp.' });
+    }
     req.atendente = nomeAtendente(decoded);
     req.isAdmin = isAdmin(req.atendente);
     next();
@@ -74,4 +94,4 @@ async function requireAuth(req, res, next) {
   }
 }
 
-module.exports = { verifyIdToken, nomeAtendente, isAdmin, requireAuth };
+module.exports = { verifyIdToken, nomeAtendente, isAdmin, requireAuth, atendenteAutorizado };
