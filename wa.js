@@ -7,6 +7,7 @@ const fs = require('fs');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
   DisconnectReason,
   downloadMediaMessage,
   fetchLatestBaileysVersion,
@@ -348,7 +349,10 @@ async function conectar() {
   // getMessage -> quando o destinatário não consegue decodificar e pede o reenvio, o Baileys
   // busca aqui o conteúdo original (guardado no banco) e reenvia — evita "Aguardando mensagem".
   sock = makeWASocket({
-    version, auth: state, printQRInTerminal: false, logger,
+    version, printQRInTerminal: false, logger,
+    // Chaves Signal com cache/serialização (evita corrida no "ratchet" que travava a
+    // 2ª mensagem em diante em "Aguardando mensagem"). Recomendado pelo próprio Baileys.
+    auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
     syncFullHistory: false, markOnlineOnConnect: false,
     msgRetryCounterCache,
     getMessage: async (key) => {
@@ -363,12 +367,18 @@ async function conectar() {
     },
   });
 
+  // Referência do socket desta conexão. Se depois for substituído por um novo,
+  // os eventos que ainda dispararem neste (antigo) são ignorados — evita laço de
+  // reconexão em que um socket descartado reagenda e mata o socket novo.
+  const thisSock = sock;
+
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('contacts.upsert', registrarContatos);
   sock.ev.on('contacts.update', registrarContatos);
 
   sock.ev.on('connection.update', async (u) => {
+    if (thisSock !== sock) return; // evento de um socket antigo/descartado
     const { connection, lastDisconnect, qr } = u;
     if (qr) { estado.qr = await QRCode.toDataURL(qr); estado.conectado = false; handlers.onStatus(estado); }
     if (connection === 'open') {
