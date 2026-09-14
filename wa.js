@@ -315,6 +315,29 @@ function agendarReconexao(ms, limpar) {
   }, ms);
 }
 
+// Cache simples (interface compatível com o Baileys: get/set/del/flushAll)
+function criarCacheSimples() {
+  const map = new Map();
+  return {
+    get: (k) => map.get(k),
+    set: (k, v) => { map.set(k, v); },
+    del: (k) => { map.delete(k); },
+    flushAll: () => { map.clear(); },
+  };
+}
+// Conta as retentativas de reenvio por mensagem — o Baileys usa isso para reentregar
+// mensagens que o destinatário não conseguiu descriptografar (evita "Aguardando mensagem").
+const msgRetryCounterCache = criarCacheSimples();
+
+// Guarda em memória o conteúdo das últimas mensagens ENVIADAS, para o getMessage reentregar
+// na hora do retry sem depender de ida ao banco (mais rápido e à prova de corrida).
+const _sentCache = new Map();
+function _guardarEnviada(id, message) {
+  if (!id || !message) return;
+  _sentCache.set(id, message);
+  if (_sentCache.size > 400) { const primeiro = _sentCache.keys().next().value; _sentCache.delete(primeiro); }
+}
+
 async function conectar() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
@@ -327,9 +350,13 @@ async function conectar() {
   sock = makeWASocket({
     version, auth: state, printQRInTerminal: false, logger,
     syncFullHistory: false, markOnlineOnConnect: false,
+    msgRetryCounterCache,
     getMessage: async (key) => {
       try {
-        const m = db.getMensagem(key && key.id);
+        const id = key && key.id;
+        // 1º: memória (mensagens que acabamos de enviar); 2º: banco (histórico)
+        if (id && _sentCache.has(id)) return _sentCache.get(id);
+        const m = db.getMensagem(id);
         if (m && m.raw) { const p = JSON.parse(m.raw); if (p && p.message) return p.message; }
       } catch (e) {}
       return undefined;
@@ -512,6 +539,7 @@ async function sendText(jid, texto, quoted) {
   const alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
   const opts = quoted ? { quoted } : {};
   const r = await sock.sendMessage(alvo, { text: texto }, opts);
+  _guardarEnviada(r.key.id, r.message);
   return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: texto, type: 'text', ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: rawJSON(r.key, r.message) };
 }
 
@@ -525,6 +553,7 @@ async function sendMedia(jid, filename, mimetype, buffer, caption) {
   else if (mt.startsWith('audio/')) { content = { audio: buffer, mimetype: mt }; tipo = 'audio'; }
   else { content = { document: buffer, fileName: filename, mimetype: mt, caption: caption || undefined }; tipo = 'document'; }
   const r = await sock.sendMessage(alvo, content);
+  _guardarEnviada(r.key.id, r.message);
   const mediaUrl = salvarMediaLocal(r.key.id, filename, buffer);
   return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: caption || '', type: tipo, mediaName: filename, mediaUrl, ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: rawJSON(r.key, r.message) };
 }
