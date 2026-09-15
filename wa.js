@@ -354,6 +354,11 @@ async function conectar() {
     // 2ª mensagem em diante em "Aguardando mensagem"). Recomendado pelo próprio Baileys.
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
     syncFullHistory: false, markOnlineOnConnect: false,
+    // Sem tempo-limite fixo nas consultas iniciais (evita o "init queries timed out (408)"
+    // que derrubava a conexão logo após conectar). keepAlive mantém a conexão viva.
+    defaultQueryTimeoutMs: undefined,
+    keepAliveIntervalMs: 25000,
+    retryRequestDelayMs: 500,
     msgRetryCounterCache,
     getMessage: async (key) => {
       try {
