@@ -31,6 +31,7 @@ fs.mkdirSync(MEDIA_DIR, { recursive: true });
 const saude = {
   badMacTimestamps: [],   // horários dos erros de sessão recentes
   ultimaMsgRecebida: null,
+  ultimaMsgEnviada: null,
   ultimoErroDecrypt: null,
   reconexoesAuto: [],     // horários das reconexões automáticas (janela de 30 min)
   precisaReparear: false, // true = erros persistem mesmo após reconectar -> precisa QR
@@ -96,7 +97,10 @@ function verificarSaudeConexao() {
   saude.reconexoesAuto = saude.reconexoesAuto.filter(t => now - t < 30 * 60 * 1000);
   const recentes = _badMacRecentes(3 * 60 * 1000);
   const recebendoOk = saude.ultimaMsgRecebida && (now - saude.ultimaMsgRecebida < 3 * 60 * 1000);
-  if (recentes < 15 || recebendoOk || saude.precisaReparear) return;
+  // Enviar com sucesso também é sinal de conexão saudável: muitos erros de sessão são
+  // apenas cópias das próprias mensagens enviadas (fromMe/@lid) que não precisam ser lidas.
+  const enviandoOk = saude.ultimaMsgEnviada && (now - saude.ultimaMsgEnviada < 3 * 60 * 1000);
+  if (recentes < 15 || recebendoOk || enviandoOk || saude.precisaReparear) return;
   if (saude.reconexoesAuto.length < 3) {
     console.log(`[wa][saude] surto de ${recentes} erros de sessao em 3min sem receber mensagens — reiniciando a conexao (tentativa ${saude.reconexoesAuto.length + 1}/3).`);
     saude.reconexoesAuto.push(now);
@@ -555,6 +559,7 @@ async function sendText(jid, texto, quoted) {
   const opts = quoted ? { quoted } : {};
   const r = await sock.sendMessage(alvo, { text: texto }, opts);
   _guardarEnviada(r.key.id, r.message);
+  saude.ultimaMsgEnviada = Date.now();
   return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: texto, type: 'text', ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: rawJSON(r.key, r.message) };
 }
 
@@ -569,6 +574,7 @@ async function sendMedia(jid, filename, mimetype, buffer, caption) {
   else { content = { document: buffer, fileName: filename, mimetype: mt, caption: caption || undefined }; tipo = 'document'; }
   const r = await sock.sendMessage(alvo, content);
   _guardarEnviada(r.key.id, r.message);
+  saude.ultimaMsgEnviada = Date.now();
   const mediaUrl = salvarMediaLocal(r.key.id, filename, buffer);
   return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: caption || '', type: tipo, mediaName: filename, mediaUrl, ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: rawJSON(r.key, r.message) };
 }
