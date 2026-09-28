@@ -103,7 +103,11 @@ function listarChats() {
 }
 
 function listarMensagens(jid, limite = 500) {
-  return db.prepare(`SELECT * FROM messages WHERE jid = ? ORDER BY ts ASC LIMIT ?`).all(jid, limite);
+  // Traz as MAIS RECENTES (DESC + LIMIT) e devolve em ordem crescente. Antes usava ASC,
+  // que trazia as 500 mais ANTIGAS: numa conversa com +500 mensagens, as recentes ficavam
+  // de fora e não apareciam (ex.: metade @s.whatsapp.net antiga do contato).
+  const rows = db.prepare(`SELECT * FROM messages WHERE jid = ? ORDER BY ts DESC LIMIT ?`).all(jid, limite);
+  return rows.reverse();
 }
 
 function getMensagem(id) {
