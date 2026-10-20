@@ -11,6 +11,7 @@ const { Server } = require('socket.io');
 const { requireAuth, verifyIdToken, nomeAtendente, atendenteAutorizado } = require('./auth');
 const db = require('./db');
 const wa = require('./wa');
+const agendador = require('./agendador');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -160,6 +161,25 @@ app.post('/assign', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Relatórios automáticos (grupo de informativos) ----
+// Lista os grupos do número conectado (para escolher no painel de Configurações).
+app.get('/grupos', requireAuth, async (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: 'Apenas administradores.' });
+  try { res.json({ grupos: await agendador.listarGruposDisponiveis() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Envia um relatório agora (teste). body: { tipo } ou { tipo: 'todos' }.
+app.post('/relatorios/testar', requireAuth, async (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: 'Apenas administradores.' });
+  try {
+    const { tipo } = req.body || {};
+    if (tipo === 'todos') { const r = await agendador.enviarTodosAgora(); return res.json({ ok: true, resultado: r }); }
+    const r = await agendador.enviarAgora(tipo);
+    res.json({ ok: true, ...r });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ---- WhatsApp: liga os eventos ao banco e ao tempo real ----
 wa.initWA({
   onMessage: (registro) => {
@@ -174,5 +194,8 @@ wa.initWA({
   onReaction: (d) => io.emit('reaction', d),
   onSync: (info) => io.emit('sync', info),
 });
+
+// Agendador dos relatórios automáticos (checa de minuto em minuto).
+agendador.iniciar();
 
 server.listen(PORT, () => console.log(`[server] ouvindo na porta ${PORT}`));

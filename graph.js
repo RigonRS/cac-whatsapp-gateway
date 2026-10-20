@@ -49,6 +49,20 @@ async function readJson(path) {
 async function getClientes() {
   return (await readJson(`${DATA_FOLDER}/clientes.json`)) || [];
 }
+// Demais arquivos de dados do sistema (usados pelos relatórios automáticos).
+async function getProcessos() {
+  return (await readJson(`${DATA_FOLDER}/processos.json`)) || [];
+}
+async function getDocumentos() {
+  return (await readJson(`${DATA_FOLDER}/documentos.json`)) || [];
+}
+async function getArmas() {
+  return (await readJson(`${DATA_FOLDER}/armas.json`)) || [];
+}
+// Configuração dos relatórios automáticos (editada pela página de Configurações).
+async function getConfigRelatorios() {
+  return await readJson(`${DATA_FOLDER}/relatorios_whatsapp.json`);
+}
 
 // ---- SharePoint (site de documentos) ----
 let _siteId = null;
@@ -95,4 +109,4 @@ async function salvarArquivoCliente(title, filename, buffer) {
   return res.json();
 }
 
-module.exports = { getMsToken, getClientes, salvarArquivoCliente, DOCS_PATH, SUBPASTA_RECEBIDOS };
+module.exports = { getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getConfigRelatorios, salvarArquivoCliente, DOCS_PATH, SUBPASTA_RECEBIDOS };

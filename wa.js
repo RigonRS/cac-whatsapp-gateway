@@ -622,6 +622,30 @@ async function avatarUrl(jid) {
   return null;
 }
 
+// ---- Grupos (usado pelos relatórios automáticos) ----
+// Lista os grupos de que o número participa: [{ jid, nome }].
+async function listarGrupos() {
+  if (!sock || !estado.conectado) throw new Error('WhatsApp não está conectado.');
+  const grupos = await sock.groupFetchAllParticipating();
+  return Object.values(grupos || {})
+    .map(g => ({ jid: g.id, nome: g.subject || '' }))
+    .sort((a, b) => (a.nome || '').localeCompare(b.nome || '', 'pt-BR'));
+}
+
+// Envia um texto a um grupo identificado pelo NOME (assunto) ou já pelo jid (@g.us).
+async function enviarParaGrupo(nomeOuJid, texto) {
+  let jid = String(nomeOuJid || '').trim();
+  if (!jid) throw new Error('Grupo não informado.');
+  if (!jid.endsWith('@g.us')) {
+    const grupos = await listarGrupos();
+    const alvo = jid.toLowerCase();
+    const g = grupos.find(x => (x.nome || '').trim().toLowerCase() === alvo);
+    if (!g) throw new Error(`Grupo "${nomeOuJid}" não encontrado nos grupos do número conectado.`);
+    jid = g.jid;
+  }
+  return sendText(jid, texto);
+}
+
 function getEstado() { return { conectado: estado.conectado, qr: estado.qr, numero: estado.numero, sincronizando: estado.sincronizando, syncProgress: estado.syncProgress }; }
 
 function initWA(h) {
@@ -631,4 +655,4 @@ function initWA(h) {
   conectar().catch((e) => console.error('[wa] erro ao conectar:', e.message));
 }
 
-module.exports = { initWA, sendText, sendMedia, forward, avatarUrl, getEstado, getSaude, logout };
+module.exports = { initWA, sendText, sendMedia, forward, avatarUrl, getEstado, getSaude, logout, listarGrupos, enviarParaGrupo };
