@@ -195,4 +195,159 @@ function relDeferidosDoDia(dados, hojeIso) {
   return linhas.join('\n').trim();
 }
 
-module.exports = { relProcessosAProtocolar, relDocumentosVencendo, relDeferidosDoDia };
+// ============================================================
+// RELATÓRIO 4 — Conversas sem resposta (atendimento do WhatsApp)
+// Lê o banco SQLite (db) diretamente, pois trata de mensagens, não dos JSON.
+// ============================================================
+
+// Só os dígitos de um telefone/jid
+function soDigitos(s) { return String(s || '').replace(/\D/g, ''); }
+
+// Brasil não tem horário de verão desde 2019 -> fuso fixo UTC-3.
+const SP_OFFSET_MS = 3 * 3600 * 1000;
+// Decompõe um instante (epoch em segundos) na hora "de parede" de Brasília.
+function spParts(epochSec) {
+  const d = new Date(epochSec * 1000 - SP_OFFSET_MS);
+  return { y: d.getUTCFullYear(), mo: d.getUTCMonth(), da: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes(), dow: d.getUTCDay() };
+}
+// Epoch (segundos) de um dia de Brasília (y/mo/da) + hora "HH:MM".
+function spEpoch(y, mo, da, hhmm) {
+  const [h, m] = String(hhmm || '00:00').split(':').map(Number);
+  const asUtc = Date.UTC(y, mo, da, h || 0, m || 0, 0);
+  return Math.floor((asUtc + SP_OFFSET_MS) / 1000);
+}
+
+// Minutos dentro do horário comercial (Seg–Sex, janela inicio–fim) entre dois instantes.
+function minutosComerciais(tsIni, tsFim, janela) {
+  if (!tsIni || !tsFim || tsFim <= tsIni) return 0;
+  const inicio = (janela && janela.inicio) || '08:00';
+  const fim = (janela && janela.fim) || '18:00';
+  let total = 0;
+  let p = spParts(tsIni);
+  for (let i = 0; i < 120; i++) {
+    const diaIni = spEpoch(p.y, p.mo, p.da, '00:00');
+    const dow = spParts(diaIni).dow;
+    if (dow >= 1 && dow <= 5) { // segunda a sexta
+      const aberto = spEpoch(p.y, p.mo, p.da, inicio);
+      const fechado = spEpoch(p.y, p.mo, p.da, fim);
+      const lo = Math.max(tsIni, aberto);
+      const hi = Math.min(tsFim, fechado);
+      if (hi > lo) total += (hi - lo);
+    }
+    const prox = diaIni + 24 * 3600;
+    if (prox > tsFim) break;
+    p = spParts(prox);
+  }
+  return Math.floor(total / 60);
+}
+
+// "há 45 min" / "há 4h10"
+function fmtEspera(min) {
+  if (min < 60) return `há ${min} min`;
+  const h = Math.floor(min / 60), m = min % 60;
+  return m ? `há ${h}h${String(m).padStart(2, '0')}` : `há ${h}h`;
+}
+
+// Formata telefone brasileiro para exibição.
+function fmtTelefone(digits) {
+  let d = soDigitos(digits);
+  if (d.startsWith('55') && d.length > 11) d = d.slice(2);
+  if (d.length === 11) return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return d;
+}
+
+// A última mensagem do cliente é só um agradecimento/encerramento?
+function ehEncerramento(body, type) {
+  if (type && type !== 'text') return false; // mídia não é "encerramento"
+  const t = String(body || '').trim().toLowerCase();
+  if (!t) return false;
+  const semAcento = t.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const limpo = semAcento.replace(/[!.…,;:)*_~"'?]/g, ' ').replace(/\s+/g, ' ').trim();
+  // Só emojis/símbolos (sem letra/número) e curto -> encerramento
+  if (!/[a-z0-9]/.test(limpo)) return [...t].length <= 6;
+  const PALAVRAS = new Set([
+    'obrigado', 'obrigada', 'obg', 'obgd', 'obgada', 'vlw', 'valeu',
+    'ok', 'okay', 'blz', 'beleza', 'ta bom', 'tabom', 'otimo', 'perfeito',
+    'show', 'certo', 'combinado', 'isso', 'isso mesmo', 'isso ai', 'tudo bem',
+    'tudo certo', 'joia', 'maravilha', 'top', 'entendi', 'entendido', 'ciente',
+    'grato', 'grata', 'agradecido', 'agradecida', 'agradeco',
+    'muito obrigado', 'muito obrigada', 'obrigado viu', 'ok obrigado', 'perfeito obrigado',
+  ]);
+  if (PALAVRAS.has(limpo)) return true;
+  if (/^(muito\s+)?obrigad[oa]\b/.test(limpo)) return true;         // "obrigado por tudo"
+  if (/^(ok|blz|beleza|valeu|vlw|certo)\b/.test(limpo) && limpo.length <= 24) return true;
+  return false;
+}
+
+function relConversasSemResposta(db, agoraEpoch, cfg, opcoes = {}) {
+  cfg = cfg || {};
+  const limiteMin = Number(cfg.limiteMin) || 60;
+  const maxAparicoes = (cfg.maxAparicoes === 0 || cfg.maxAparicoes) ? Number(cfg.maxAparicoes) : 4;
+  const janela = cfg.janela || { inicio: '08:00', fim: '18:00' };
+  const ignorados = new Set((cfg.ignorados || []).map(soDigitos).filter(Boolean));
+  const persistir = !!opcoes.persistir;
+
+  const chats = db.listarChats() || [];
+  const pendentes = [];
+
+  for (const chat of chats) {
+    const jid = chat.jid || '';
+    if (!(jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid'))) continue; // só conversas individuais
+
+    let fone = soDigitos(chat.phone);
+    if (!fone && jid.endsWith('@s.whatsapp.net')) fone = soDigitos(jid.split('@')[0]);
+
+    // (0) contato ignorado (compara com e sem o 55 do país)
+    if (fone) {
+      let f2 = fone; if (f2.startsWith('55') && f2.length > 11) f2 = f2.slice(2);
+      if (ignorados.has(fone) || ignorados.has(f2) || ignorados.has('55' + f2)) continue;
+    }
+
+    const msgs = db.listarMensagens(jid, 2) || [];
+    if (!msgs.length) continue;
+    const ultima = msgs[msgs.length - 1];
+    const penultima = msgs.length > 1 ? msgs[msgs.length - 2] : null;
+
+    if (!ultima || ultima.from_me) continue;                             // (1) a bola está conosco?
+    if (chat.resolved_ts && ultima.ts <= chat.resolved_ts) continue;     // (2) resolvida e sem msg nova
+    if (penultima && penultima.from_me && ehEncerramento(ultima.body, ultima.type)) continue; // (3) encerramento
+
+    const esperaMin = minutosComerciais(ultima.ts, agoraEpoch, janela);  // (4) SLA comercial
+    if (esperaMin < limiteMin) continue;
+
+    let count = Number(chat.report_count) || 0;                          // (5) auto-saída após N aparições
+    if (Number(chat.report_count_ts) !== Number(ultima.ts)) count = 0;   // cliente mandou algo novo -> zera
+    if (maxAparicoes > 0 && count >= maxAparicoes) continue;
+
+    pendentes.push({ jid, fone, nome: chat.name, espera: esperaMin, body: ultima.body, type: ultima.type, novoCount: count + 1, ts: ultima.ts });
+  }
+
+  if (!pendentes.length) return null;
+  pendentes.sort((a, b) => b.espera - a.espera);
+
+  if (persistir) {
+    for (const p of pendentes) { try { db.setContadorRelatorio(p.jid, p.novoCount, p.ts); } catch (e) {} }
+  }
+
+  const pn = spParts(agoraEpoch);
+  const dataHora = `${String(pn.da).padStart(2, '0')}/${String(pn.mo + 1).padStart(2, '0')}/${pn.y} ${String(pn.h).padStart(2, '0')}:${String(pn.mi).padStart(2, '0')}`;
+
+  const linhas = [`📨 *CONVERSAS SEM RESPOSTA* — ${dataHora}`, ''];
+  linhas.push(`Clientes aguardando retorno (sem resposta há mais de ${limiteMin} min no horário comercial):`, '');
+  pendentes.forEach((p, i) => {
+    const temNome = p.nome && p.nome.trim();
+    const nomeLinha = temNome ? `${p.nome.trim()}${p.fone ? ` (${fmtTelefone(p.fone)})` : ''}` : fmtTelefone(p.fone);
+    let previa = (p.type && p.type !== 'text') ? `[${p.type}] ${p.body || ''}`.trim() : (p.body || '');
+    previa = previa.replace(/\s+/g, ' ').trim();
+    if (previa.length > 90) previa = previa.slice(0, 90) + '…';
+    linhas.push(`${i + 1}. ${nomeLinha} — ${fmtEspera(p.espera)}`);
+    if (previa) linhas.push(`   "${previa}"`);
+  });
+  linhas.push('');
+  linhas.push(`_Total: ${pendentes.length} conversa(s) aguardando resposta._`);
+  if (maxAparicoes > 0) linhas.push(`_Obs.: conversa que aparecer ${maxAparicoes} vezes sem nenhuma resposta sai automaticamente da lista._`);
+  return linhas.join('\n').trim();
+}
+
+module.exports = { relProcessosAProtocolar, relDocumentosVencendo, relDeferidosDoDia, relConversasSemResposta };

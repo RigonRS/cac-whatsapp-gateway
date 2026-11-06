@@ -51,6 +51,13 @@ addCol('messages', 'reaction', 'TEXT');
 addCol('messages', 'raw', 'TEXT');
 addCol('messages', 'reply_id', 'TEXT');
 addCol('messages', 'reply_body', 'TEXT');
+// Controle do relatório "conversas sem resposta":
+//  resolved_ts       -> conversa marcada como resolvida até este instante (não requer resposta)
+//  report_count      -> quantas vezes já apareceu em relatórios enviados sem resposta nossa
+//  report_count_ts   -> a qual "ts" da última mensagem do cliente esse contador se refere
+addCol('chats', 'resolved_ts', 'INTEGER');
+addCol('chats', 'report_count', 'INTEGER');
+addCol('chats', 'report_count_ts', 'INTEGER');
 
 const stmtUpsertChat = db.prepare(`
   INSERT INTO chats (jid, name, phone, last_message, last_ts, unread)
@@ -169,4 +176,17 @@ function definirAtendente(jid, atendente) {
   db.prepare(`UPDATE chats SET assigned_to = ? WHERE jid = ?`).run(atendente, jid);
 }
 
-module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, getChatPhone, marcarLido, marcarTodosLidos, marcarNaoLido, setReacao, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens };
+// ---- Relatório "conversas sem resposta" ----
+// Marca uma conversa como resolvida (não requer resposta) até o instante informado.
+// Volta a ser monitorada automaticamente quando o cliente mandar uma mensagem nova (ts maior).
+function marcarResolvida(jid, ts) {
+  db.prepare(`UPDATE chats SET resolved_ts = ? WHERE jid = ?`).run(ts || Math.floor(Date.now() / 1000), jid);
+}
+
+// Guarda quantas vezes a conversa já apareceu no relatório (count) e a qual mensagem
+// do cliente (ts) esse contador se refere, para zerar quando o cliente escrever de novo.
+function setContadorRelatorio(jid, count, ts) {
+  db.prepare(`UPDATE chats SET report_count = ?, report_count_ts = ? WHERE jid = ?`).run(count, ts, jid);
+}
+
+module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, getChatPhone, marcarLido, marcarTodosLidos, marcarNaoLido, setReacao, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens, marcarResolvida, setContadorRelatorio };

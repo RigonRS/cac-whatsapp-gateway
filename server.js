@@ -161,6 +161,16 @@ app.post('/assign', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// Marca uma conversa como resolvida (não requer resposta) -> sai do relatório de
+// conversas sem resposta até o cliente mandar uma mensagem nova.
+app.post('/resolver', requireAuth, (req, res) => {
+  const { jid } = req.body || {};
+  if (!jid) return res.status(400).json({ error: 'jid é obrigatório' });
+  db.marcarResolvida(jid, Math.floor(Date.now() / 1000));
+  io.emit('resolved', { jid });
+  res.json({ ok: true });
+});
+
 // ---- Relatórios automáticos (grupo de informativos) ----
 // Lista os grupos do número conectado (para escolher no painel de Configurações).
 app.get('/grupos', requireAuth, async (req, res) => {

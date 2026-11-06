@@ -11,11 +11,12 @@ const path = require('path');
 const graph = require('./graph');
 const wa = require('./wa');
 const rel = require('./relatorios');
+const db = require('./db');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const ESTADO_PATH = path.join(DATA_DIR, 'relatorios-estado.json');
 
-const TIPOS = ['processosAProtocolar', 'documentosVencendo', 'deferidosDoDia'];
+const TIPOS = ['processosAProtocolar', 'documentosVencendo', 'deferidosDoDia', 'conversasSemResposta'];
 
 // Padrões iniciais (usados enquanto o admin não salvar nada no sistema).
 // dias: 0=Dom, 1=Seg, ... 6=Sáb.
@@ -24,6 +25,7 @@ const CONFIG_PADRAO = {
   processosAProtocolar: { ativo: true, dias: [1, 2, 3, 4, 5], hora: '18:00' },
   documentosVencendo:   { ativo: true, dias: [1], hora: '08:00', diasAntecedencia: 21 },
   deferidosDoDia:       { ativo: true, dias: [4], hora: '19:00' },
+  conversasSemResposta: { ativo: true, dias: [1, 2, 3, 4, 5], horas: ['10:00', '15:00'], limiteMin: 60, maxAparicoes: 4, janela: { inicio: '08:00', fim: '18:00' }, ignorados: [] },
 };
 
 // ---- Estado persistido (evita enviar o mesmo relatório duas vezes no dia) ----
@@ -76,7 +78,11 @@ async function carregarDados() {
   return { processos, documentos, clientes, armas };
 }
 
-async function construir(tipo, cfg, hojeIso, dados) {
+async function construir(tipo, cfg, hojeIso, dados, opcoes = {}) {
+  // Conversas sem resposta lê o banco SQLite (não os JSON do OneDrive).
+  if (tipo === 'conversasSemResposta') {
+    return rel.relConversasSemResposta(db, Math.floor(Date.now() / 1000), cfg.conversasSemResposta, opcoes);
+  }
   dados = dados || await carregarDados();
   if (tipo === 'processosAProtocolar') return rel.relProcessosAProtocolar(dados, hojeIso);
   if (tipo === 'documentosVencendo')   return rel.relDocumentosVencendo(dados, hojeIso, cfg.documentosVencendo.diasAntecedencia);
@@ -84,8 +90,8 @@ async function construir(tipo, cfg, hojeIso, dados) {
   return null;
 }
 
-async function enviarRelatorio(tipo, cfg, hojeIso, { forcar, dados } = {}) {
-  const texto = await construir(tipo, cfg, hojeIso, dados);
+async function enviarRelatorio(tipo, cfg, hojeIso, { forcar, dados, persistir } = {}) {
+  const texto = await construir(tipo, cfg, hojeIso, dados, { persistir: !!persistir });
   if (!texto) {
     if (forcar) throw new Error('Nada a enviar: nenhum item para esse relatório hoje.');
     console.log(`[agendador] ${tipo}: nada a enviar hoje.`);
@@ -106,17 +112,23 @@ async function tick() {
     const r = cfg[tipo];
     if (!r || !r.ativo) continue;
     if (!Array.isArray(r.dias) || !r.dias.includes(dow)) continue;
-    // Dispara a partir do horário marcado (se o gateway estava fora do ar na hora
-    // exata, recupera assim que voltar, desde que ainda seja o mesmo dia).
-    if (hhmm < (r.hora || '99:99')) continue;
-    if (estado[tipo] === iso) continue; // já enviado hoje
-    try {
-      await enviarRelatorio(tipo, cfg, iso);
-    } catch (e) {
-      console.error(`[agendador] erro ao enviar ${tipo}:`, e.message);
+    // Horários do relatório: lista (horas[]) ou horário único (hora).
+    const horarios = (Array.isArray(r.horas) && r.horas.length) ? r.horas : [r.hora || '99:99'];
+    for (const hora of horarios) {
+      // Dispara a partir do horário marcado (se o gateway estava fora do ar na hora
+      // exata, recupera assim que voltar, desde que ainda seja o mesmo dia).
+      if (hhmm < hora) continue;
+      // Com vários horários, a chave de "já enviado hoje" inclui o horário.
+      const chave = horarios.length > 1 ? `${tipo}|${hora}` : tipo;
+      if (estado[chave] === iso) continue;
+      try {
+        await enviarRelatorio(tipo, cfg, iso, { persistir: true }); // envio real: conta aparição
+      } catch (e) {
+        console.error(`[agendador] erro ao enviar ${tipo}:`, e.message);
+      }
+      // Marca como concluído hoje mesmo quando não havia itens, para não reprocessar o dia inteiro.
+      estado[chave] = iso; salvarEstado(estado);
     }
-    // Marca como concluído hoje mesmo quando não havia itens, para não reprocessar o dia inteiro.
-    estado[tipo] = iso; salvarEstado(estado);
   }
 }
 
