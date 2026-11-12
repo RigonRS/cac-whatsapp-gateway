@@ -25,7 +25,7 @@ const CONFIG_PADRAO = {
   processosAProtocolar: { ativo: true, dias: [1, 2, 3, 4, 5], hora: '18:00' },
   documentosVencendo:   { ativo: true, dias: [1], hora: '08:00', diasAntecedencia: 21 },
   deferidosDoDia:       { ativo: true, dias: [4], hora: '19:00' },
-  conversasSemResposta: { ativo: true, dias: [1, 2, 3, 4, 5], horas: ['10:00', '15:00'], limiteMin: 60, maxAparicoes: 4, janela: { inicio: '08:00', fim: '18:00' }, ignorados: [] },
+  conversasSemResposta: { ativo: true, dias: [1, 2, 3, 4, 5], horas: ['10:00', '15:00'], limiteMin: 60, maxAparicoes: 4, maxDiasSemResposta: 5, janela: { inicio: '08:00', fim: '18:00' }, ignorados: [] },
 };
 
 // ---- Estado persistido (evita enviar o mesmo relatório duas vezes no dia) ----

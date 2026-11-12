@@ -241,11 +241,23 @@ function minutosComerciais(tsIni, tsFim, janela) {
   return Math.floor(total / 60);
 }
 
-// "há 45 min" / "há 4h10"
+// "há 45 min" / "há 4h10" / (acima de 24h) "há 2d 5h"
 function fmtEspera(min) {
   if (min < 60) return `há ${min} min`;
-  const h = Math.floor(min / 60), m = min % 60;
-  return m ? `há ${h}h${String(m).padStart(2, '0')}` : `há ${h}h`;
+  const h = Math.floor(min / 60);
+  if (h < 24) { const m = min % 60; return m ? `há ${h}h${String(m).padStart(2, '0')}` : `há ${h}h`; }
+  const d = Math.floor(h / 24), hr = h % 24;
+  return hr ? `há ${d}d ${hr}h` : `há ${d}d`;
+}
+
+// Normaliza texto: minúsculas, sem acento, sem pontuação/emoji, espaços colapsados.
+function normStr(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 // Formata telefone brasileiro para exibição.
@@ -257,26 +269,43 @@ function fmtTelefone(digits) {
   return d;
 }
 
-// A última mensagem do cliente é só um agradecimento/encerramento?
+// A última mensagem do cliente é só um agradecimento/encerramento (ou auto-resposta,
+// figurinha)? Se sim, não conta como "sem resposta".
 function ehEncerramento(body, type) {
-  if (type && type !== 'text') return false; // mídia não é "encerramento"
-  const t = String(body || '').trim().toLowerCase();
-  if (!t) return false;
-  const semAcento = t.normalize('NFD').replace(/[̀-ͯ]/g, '');
-  const limpo = semAcento.replace(/[!.…,;:)*_~"'?]/g, ' ').replace(/\s+/g, ' ').trim();
-  // Só emojis/símbolos (sem letra/número) e curto -> encerramento
-  if (!/[a-z0-9]/.test(limpo)) return [...t].length <= 6;
-  const PALAVRAS = new Set([
-    'obrigado', 'obrigada', 'obg', 'obgd', 'obgada', 'vlw', 'valeu',
-    'ok', 'okay', 'blz', 'beleza', 'ta bom', 'tabom', 'otimo', 'perfeito',
-    'show', 'certo', 'combinado', 'isso', 'isso mesmo', 'isso ai', 'tudo bem',
-    'tudo certo', 'joia', 'maravilha', 'top', 'entendi', 'entendido', 'ciente',
-    'grato', 'grata', 'agradecido', 'agradecida', 'agradeco',
-    'muito obrigado', 'muito obrigada', 'obrigado viu', 'ok obrigado', 'perfeito obrigado',
+  if (type === 'sticker') return true;          // figurinha sozinha não requer resposta
+  if (type && type !== 'text') return false;    // imagem/documento/áudio podem precisar de resposta
+  const raw = String(body || '').trim();
+  if (!raw) return false;
+  const t = normStr(raw);
+  if (!t) return true;                          // só emojis/símbolos -> encerramento
+
+  // Trechos que, se aparecerem em qualquer parte, indicam encerramento/auto-resposta.
+  const CONTEM = [
+    'disponha', 'de nada', 'denada', 'por nada', 'imagina', 'magina', 'nada a agradecer',
+    'as ordens', 'a disposicao', 'estamos a disposicao', 'ficamos a disposicao', 'qualquer coisa',
+    'encerr', 'foi resolvid', 'ja resolvid', 'assunto resolvid', 'ja foi atendid',
+    'agradecemos seu contato', 'agradecemos o contato', 'agradecemos a mensagem',
+    'nao estamos disponiveis', 'fora do horario', 'horario de atendimento', 'horario de funcionamento',
+    'retornaremos', 'responderemos', 'mensagem automatica', 'atendimento automatico', 'resposta automatica',
+  ];
+  for (const c of CONTEM) if (t.includes(c)) return true;
+
+  // Remove saudação inicial ("bom dia", "boa tarde"...) e intensificador ("muito") e reavalia o resto.
+  let resto = t.replace(/^(bom dia|boa tarde|boa noite|boa|ola|oi|opa|eai|e ai)\b\s*/, '').trim();
+  resto = resto.replace(/^(muito|mto|mt)\s+/, '').trim();
+
+  const FECHA = new Set([
+    'ok', 'okay', 'ok obrigado', 'ok entao', 'ok entendi', 'blz', 'beleza', 'ta', 'ta ok', 'ta bom',
+    'tabom', 'ta certo', 'ta otimo', 'ta joia', 'certo', 'combinado', 'isso', 'isso mesmo', 'isso ai',
+    'perfeito', 'show', 'show de bola', 'valeu', 'vlw', 'obrigado', 'obrigada', 'obg', 'obgd', 'obgada',
+    'joia', 'maravilha', 'top', 'entendi', 'entendido', 'ciente', 'grato', 'grata', 'gratidao',
+    'agradecido', 'agradecida', 'agradeco', 'otimo', 'merece', 'esperamos', 'aguardo', 'aguardamos',
+    'fico no aguardo', 'amem',
   ]);
-  if (PALAVRAS.has(limpo)) return true;
-  if (/^(muito\s+)?obrigad[oa]\b/.test(limpo)) return true;         // "obrigado por tudo"
-  if (/^(ok|blz|beleza|valeu|vlw|certo)\b/.test(limpo) && limpo.length <= 24) return true;
+  if (FECHA.has(resto) || FECHA.has(t)) return true;
+
+  // Começa com um fechamento típico e é curto -> encerramento ("obrigado por tudo", "ok então valeu").
+  if (/^(ok|blz|beleza|valeu|vlw|certo|ta|perfeito|obrigad|disponha|show|joia|grat)\b/.test(resto) && resto.length <= 24) return true;
   return false;
 }
 
@@ -284,6 +313,7 @@ function relConversasSemResposta(db, agoraEpoch, cfg, opcoes = {}) {
   cfg = cfg || {};
   const limiteMin = Number(cfg.limiteMin) || 60;
   const maxAparicoes = (cfg.maxAparicoes === 0 || cfg.maxAparicoes) ? Number(cfg.maxAparicoes) : 4;
+  const maxDias = (cfg.maxDiasSemResposta === 0 || cfg.maxDiasSemResposta) ? Number(cfg.maxDiasSemResposta) : 5;
   const janela = cfg.janela || { inicio: '08:00', fim: '18:00' };
   const ignorados = new Set((cfg.ignorados || []).map(soDigitos).filter(Boolean));
   const persistir = !!opcoes.persistir;
@@ -304,23 +334,22 @@ function relConversasSemResposta(db, agoraEpoch, cfg, opcoes = {}) {
       if (ignorados.has(fone) || ignorados.has(f2) || ignorados.has('55' + f2)) continue;
     }
 
-    const msgs = db.listarMensagens(jid, 2) || [];
-    if (!msgs.length) continue;
+    const msgs = db.listarMensagens(jid, 1) || [];
     const ultima = msgs[msgs.length - 1];
-    const penultima = msgs.length > 1 ? msgs[msgs.length - 2] : null;
-
     if (!ultima || ultima.from_me) continue;                             // (1) a bola está conosco?
     if (chat.resolved_ts && ultima.ts <= chat.resolved_ts) continue;     // (2) resolvida e sem msg nova
-    if (penultima && penultima.from_me && ehEncerramento(ultima.body, ultima.type)) continue; // (3) encerramento
+    if (ehEncerramento(ultima.body, ultima.type)) continue;              // (3) agradecimento/encerramento/auto-resposta
 
-    const esperaMin = minutosComerciais(ultima.ts, agoraEpoch, janela);  // (4) SLA comercial
-    if (esperaMin < limiteMin) continue;
+    if (minutosComerciais(ultima.ts, agoraEpoch, janela) < limiteMin) continue; // (4) tempo mínimo (horário comercial)
 
-    let count = Number(chat.report_count) || 0;                          // (5) auto-saída após N aparições
+    const esperaSeg = Math.max(0, agoraEpoch - Number(ultima.ts));       // tempo real decorrido (calendário)
+    if (maxDias > 0 && esperaSeg > maxDias * 86400) continue;            // (5) corta conversas muito antigas
+
+    let count = Number(chat.report_count) || 0;                          // (6) auto-saída após N aparições
     if (Number(chat.report_count_ts) !== Number(ultima.ts)) count = 0;   // cliente mandou algo novo -> zera
     if (maxAparicoes > 0 && count >= maxAparicoes) continue;
 
-    pendentes.push({ jid, fone, nome: chat.name, espera: esperaMin, body: ultima.body, type: ultima.type, novoCount: count + 1, ts: ultima.ts });
+    pendentes.push({ jid, fone, nome: chat.name, espera: Math.floor(esperaSeg / 60), body: ultima.body, type: ultima.type, novoCount: count + 1, ts: ultima.ts });
   }
 
   if (!pendentes.length) return null;
