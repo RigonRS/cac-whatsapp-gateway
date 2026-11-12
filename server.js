@@ -12,6 +12,7 @@ const { requireAuth, verifyIdToken, nomeAtendente, atendenteAutorizado } = requi
 const db = require('./db');
 const wa = require('./wa');
 const agendador = require('./agendador');
+const graph = require('./graph');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -45,6 +46,41 @@ app.use('/media', cors({ origin: corsOrigin }), express.static(path.join(DATA_DI
 
 // ---- Rotas ----
 app.get('/health', (req, res) => res.json({ ok: true }));
+
+// ============================================================
+// ASSISTENTE (IA local) — leitura de dados protegida por token compartilhado.
+// Usado pelo orquestrador que roda no PC do usuário (projeto assistente-local).
+// O token fica no .env da VPS (ASSISTENTE_TOKEN) e no config do assistente local.
+// ============================================================
+function requireAssistente(req, res, next) {
+  const esperado = process.env.ASSISTENTE_TOKEN;
+  if (!esperado) return res.status(503).json({ error: 'Assistente não configurado (ASSISTENTE_TOKEN ausente no servidor).' });
+  const h = req.headers.authorization || '';
+  const token = h.startsWith('Bearer ') ? h.slice(7) : (req.headers['x-assistente-token'] || req.query.token || '');
+  if (token !== esperado) return res.status(401).json({ error: 'Token do assistente inválido.' });
+  next();
+}
+
+app.get('/dados/clientes', requireAssistente, async (req, res) => {
+  try {
+    const lista = await graph.getClientes();
+    // Remove campo sensível (senha do gov.br) antes de entregar ao assistente.
+    const limpos = (lista || []).map(c => { const { SenhaGOV, ...resto } = c; return resto; });
+    res.json({ clientes: limpos });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/dados/processos', requireAssistente, async (req, res) => {
+  try { res.json({ processos: await graph.getProcessos() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/dados/documentos', requireAssistente, async (req, res) => {
+  try { res.json({ documentos: await graph.getDocumentos() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/dados/armas', requireAssistente, async (req, res) => {
+  try { res.json({ armas: await graph.getArmas() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 app.get('/status', requireAuth, (req, res) => {
   const e = wa.getEstado();
