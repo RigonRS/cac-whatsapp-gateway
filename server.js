@@ -81,6 +81,14 @@ app.get('/dados/armas', requireAssistente, async (req, res) => {
   try { res.json({ armas: await graph.getArmas() }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+app.get('/dados/orcamentos', requireAssistente, async (req, res) => {
+  try { res.json({ orcamentos: await graph.getOrcamentos() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/dados/demandas', requireAssistente, async (req, res) => {
+  try { res.json({ demandas: await graph.getDemandas() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 app.get('/status', requireAuth, (req, res) => {
   const e = wa.getEstado();

@@ -59,6 +59,12 @@ async function getDocumentos() {
 async function getArmas() {
   return (await readJson(`${DATA_FOLDER}/armas.json`)) || [];
 }
+async function getOrcamentos() {
+  return (await readJson(`${DATA_FOLDER}/orcamentos.json`)) || [];
+}
+async function getDemandas() {
+  return (await readJson(`${DATA_FOLDER}/demandas.json`)) || [];
+}
 // Configuração dos relatórios automáticos (editada pela página de Configurações).
 async function getConfigRelatorios() {
   return await readJson(`${DATA_FOLDER}/relatorios_whatsapp.json`);
@@ -109,4 +115,4 @@ async function salvarArquivoCliente(title, filename, buffer) {
   return res.json();
 }
 
-module.exports = { getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getConfigRelatorios, salvarArquivoCliente, DOCS_PATH, SUBPASTA_RECEBIDOS };
+module.exports = { getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getOrcamentos, getDemandas, getConfigRelatorios, salvarArquivoCliente, DOCS_PATH, SUBPASTA_RECEBIDOS };
