@@ -304,8 +304,11 @@ function ehEncerramento(body, type) {
   ]);
   if (FECHA.has(resto) || FECHA.has(t)) return true;
 
-  // Começa com um fechamento típico e é curto -> encerramento ("obrigado por tudo", "ok então valeu").
-  if (/^(ok|blz|beleza|valeu|vlw|certo|ta|perfeito|obrigad|disponha|show|joia|grat)\b/.test(resto) && resto.length <= 24) return true;
+  // Agradecimentos por extenso (começam com obrigado/agradeço/grato/disponha) são encerramento,
+  // mesmo em frases maiores ("obrigado por tudo", "grato pela atenção"). Palavras como "ok", "ta",
+  // "perfeito" só contam quando são a mensagem inteira (acima), para não esconder perguntas reais
+  // do tipo "Perfeito, mas e o prazo?".
+  if (/^(obrigad|agradec|grat|disponha)/.test(resto)) return true;
   return false;
 }
 
