@@ -65,6 +65,18 @@ async function getOrcamentos() {
 async function getDemandas() {
   return (await readJson(`${DATA_FOLDER}/demandas.json`)) || [];
 }
+// Lê um arquivo de dados "extra" (log de movimentações, acessos do portal, config de
+// extras, etc.) pelo nome. SÓ é usado pelo endpoint do assistente, que tem a sua própria
+// lista branca; mesmo assim validamos o nome aqui (nunca permite "../" nem clientes).
+const ARQUIVOS_PERMITIDOS = new Set([
+  'movimentacoes', 'acessos_portal', 'config_extras',
+  'extras_avulsos', 'extras_pagos_mes', 'extras_ajustes',
+  'valores_padrao', 'taxas_padrao',
+]);
+async function getArquivoDados(nome) {
+  if (!ARQUIVOS_PERMITIDOS.has(String(nome))) throw new Error('Arquivo não liberado para o assistente.');
+  return await readJson(`${DATA_FOLDER}/${nome}.json`); // pode ser array, objeto ou null
+}
 // Configuração dos relatórios automáticos (editada pela página de Configurações).
 async function getConfigRelatorios() {
   return await readJson(`${DATA_FOLDER}/relatorios_whatsapp.json`);
@@ -115,4 +127,4 @@ async function salvarArquivoCliente(title, filename, buffer) {
   return res.json();
 }
 
-module.exports = { getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getOrcamentos, getDemandas, getConfigRelatorios, salvarArquivoCliente, DOCS_PATH, SUBPASTA_RECEBIDOS };
+module.exports = { getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getOrcamentos, getDemandas, getArquivoDados, getConfigRelatorios, salvarArquivoCliente, DOCS_PATH, SUBPASTA_RECEBIDOS };

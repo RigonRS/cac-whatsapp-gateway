@@ -89,6 +89,12 @@ app.get('/dados/demandas', requireAssistente, async (req, res) => {
   try { res.json({ demandas: await graph.getDemandas() }); }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
+// Arquivos de dados "extras" (movimentações, acessos do portal, config/ajustes de extras...).
+// A lista branca fica no graph.js (getArquivoDados). Nunca expõe clientes/senha GOV.
+app.get('/dados/arquivo/:nome', requireAssistente, async (req, res) => {
+  try { res.json({ nome: req.params.nome, conteudo: await graph.getArquivoDados(req.params.nome) }); }
+  catch (e) { res.status(e.message && e.message.includes('não liberado') ? 404 : 500).json({ error: e.message }); }
+});
 
 app.get('/status', requireAuth, (req, res) => {
   const e = wa.getEstado();
