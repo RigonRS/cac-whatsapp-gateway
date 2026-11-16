@@ -1,0 +1,617 @@
+# -*- coding: utf-8 -*-
+"""
+Renomeador automático de documentos (CAC, CRAF, CTF/IBAMA, SIMAF, GTE)
+=======================================================================
+
+O que este script faz
+----------------------
+Lê o CONTEÚDO de cada PDF dentro de uma pasta e renomeia o arquivo de
+acordo com o tipo de documento identificado:
+
+1) Contém "Certificado de Registro" e "Atividades Autorizadas"
+   -> "Certificado de Registro CAC.pdf"
+
+2) Contém "Certificado de Registro de Arma de Fogo"
+   -> "CRAF <Tipo> <Marca>.pdf"
+
+3) Contém "Guia" (Guia de Tráfego Especial)
+   -> "GT <Tipo> <Marca> <Finalidade> <Destino> Val DD-MM-AAAA.pdf"
+      Finalidade normalizada para: Caça / Caça-Treinamento / Tiro Desportivo
+      Destino conforme a finalidade:
+      - Caça: "Cidade-UF" (campo País/Cidade/UF/Aeroporto-Porto)
+      - Caça-Treinamento: nome do local (início do campo Endereço e CEP)
+      - Tiro Desportivo: nome do local (campo Nome/Razão Social, sem código)
+      Se a guia não traz o nome do local (vem "XXX" ou só o nome da rua),
+      usa "Cidade-UF" do campo País/Cidade/UF/Aeroporto-Porto do destino.
+
+4) Contém "Autorização de Controle de Espécies Exóticas Invasoras"
+   -> "SIMAF <Nome da propriedade> <Cidade> Val DD-MM-AAAA.pdf"
+
+5) Contém "CERTIFICADO DE REGULARIDADE" (CTF/IBAMA)
+   -> "CTF IBAMA Val DD-MM-AAAA.pdf"
+
+Arquivos cujo conteúdo não se encaixa em nenhuma regra, ou cujos campos
+não puderam ser lidos com segurança, NÃO são renomeados — eles aparecem
+na lista "NÃO CLASSIFICADOS / REVISAR MANUALMENTE" ao final da execução.
+
+Como usar
+---------
+Este script e os dois atalhos (.bat) ficam sempre juntos, aqui nesta
+pasta. Mas eles funcionam em QUALQUER pasta de PDFs do seu computador —
+não precisa copiar nada para lá.
+
+1. Instale a biblioteca necessária (uma única vez):
+       pip install pdfplumber
+
+2. Dê 2 cliques em "1 - TESTAR (simulação).bat".
+   - Vai abrir uma janela para você escolher a pasta com os PDFs.
+   - Ele só mostra o que faria — nenhum arquivo é alterado.
+   - (Também dá pra arrastar uma pasta em cima do atalho, em vez de
+     escolher pela janela.)
+
+3. Depois de conferir a lista, dê 2 cliques em
+   "2 - RENOMEAR DE VERDADE.bat" e escolha a mesma pasta — aí sim os
+   arquivos são renomeados de fato.
+
+Uso pelo terminal (opcional):
+       py renomear_documentos.py --pasta "C:\\caminho\\da\\pasta" --aplicar
+"""
+
+import argparse
+import re
+import sys
+import unicodedata
+from pathlib import Path
+
+try:
+    import pdfplumber
+except ImportError:
+    print("ERRO: a biblioteca 'pdfplumber' não está instalada.")
+    print("Instale com:  pip install pdfplumber")
+    sys.exit(1)
+
+# Tenta garantir que acentos apareçam corretamente no console do Windows.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
+ILLEGAL_CHARS = '<>:"/\\|?*'
+DATE_RE = r"(\d{2}/\d{2}/\d{4})"
+
+
+# ---------------------------------------------------------------------------
+# Utilidades
+# ---------------------------------------------------------------------------
+
+def strip_accents(text):
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
+    )
+
+
+def norm(text):
+    """Minúsculo e sem acentos, só para comparação/busca de palavras-chave."""
+    return strip_accents(text).lower()
+
+
+def sanitize_filename(name):
+    for ch in ILLEGAL_CHARS:
+        name = name.replace(ch, "-")
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    return name
+
+
+def date_to_dash(date_str):
+    return date_str.replace("/", "-")
+
+
+def join_parts(*parts):
+    parts = [p.strip() for p in parts if p and p.strip()]
+    return sanitize_filename(" ".join(parts))
+
+
+def extract_full_text(pdf):
+    return "\n".join((page.extract_text() or "") for page in pdf.pages)
+
+
+def extract_all_tables(pdf):
+    tables = []
+    for page in pdf.pages:
+        for tbl in page.extract_tables() or []:
+            tables.append(tbl)
+    return tables
+
+
+def table_lookup(tables, header_keywords):
+    """
+    Procura, em todas as tabelas extraídas, uma linha de cabeçalho cujas
+    células (normalizadas) contenham as palavras-chave pedidas, e devolve
+    o valor da(s) coluna(s) correspondentes na primeira linha de dados
+    logo abaixo que tiver conteúdo.
+
+    header_keywords: dict {nome_logico: substring_normalizada_no_header}
+    Retorna dict {nome_logico: {"header": texto_do_cabecalho, "value": valor_da_celula}}
+    ou {} se não encontrar. Use cell_value(res, nome) para pegar só o valor.
+    """
+    for table in tables:
+        for r, row in enumerate(table):
+            if row is None:
+                continue
+            norm_row = [norm(c) if c else "" for c in row]
+            col_map = {}
+            for logical_name, keyword in header_keywords.items():
+                for c_idx, cell_norm in enumerate(norm_row):
+                    if keyword in cell_norm:
+                        col_map[logical_name] = c_idx
+                        break
+            if len(col_map) == len(header_keywords):
+                # achou uma linha de cabeçalho com todas as colunas pedidas;
+                # procura a próxima linha com dados reais
+                for data_row in table[r + 1:]:
+                    if not data_row:
+                        continue
+                    if any((data_row[i] or "").strip() for i in col_map.values() if i < len(data_row)):
+                        result = {}
+                        for logical_name, c_idx in col_map.items():
+                            val = data_row[c_idx] if c_idx < len(data_row) else ""
+                            header_text = row[c_idx] if c_idx < len(row) else ""
+                            result[logical_name] = {
+                                "header": (header_text or "").strip(),
+                                "value": (val or "").strip(),
+                            }
+                        return result
+    return {}
+
+
+def cell_value(res, logical_name):
+    """Valor simples de uma coluna encontrada por table_lookup (sem tratar
+    células compostas)."""
+    entry = res.get(logical_name)
+    if not entry:
+        return ""
+    return entry.get("value", "")
+
+
+def compound_cell_value(res, logical_name, keyword):
+    """
+    Algumas Guias (modelo Exército) juntam dois campos numa célula só,
+    com o cabeçalho também composto, ex.: cabeçalho "Mercadoria/Espécie"
+    e valor "- / PISTOLA", ou cabeçalho "Modelo/Lote" e valor "G19 / -".
+    Esta função identifica, pela posição da palavra-chave dentro do
+    cabeçalho composto, qual pedaço do valor pegar.
+
+    Se o cabeçalho for simples (sem "/"), devolve o valor inteiro sem
+    mexer — cobre o caso comum de "Espécie"/"Modelo" já virem sozinhos,
+    inclusive quando o próprio valor contém uma "/" (ex.: "carabina / FUZIL").
+    """
+    entry = res.get(logical_name)
+    if not entry:
+        return ""
+    header_text = entry.get("header", "")
+    value_text = entry.get("value", "")
+    if "/" not in header_text:
+        return value_text
+
+    header_parts = [norm(h.strip()) for h in header_text.split("/")]
+    idx = next((i for i, h in enumerate(header_parts) if keyword in h), None)
+    if idx is None:
+        return value_text
+
+    value_parts = [v.strip() for v in value_text.split("/", 1)]
+    if idx >= len(value_parts):
+        return value_text
+    picked = value_parts[idx]
+    return "" if picked == "-" else picked
+
+
+# ---------------------------------------------------------------------------
+# Extração específica para CRAF: valores de TIPO e MARCA a partir da posição
+# das palavras na página (mais confiável do que tentar adivinhar pela ordem
+# do texto, já que TIPO/MARCA ficam lado a lado em caixas separadas).
+# ---------------------------------------------------------------------------
+
+def extract_tipo_marca_by_position(pdf):
+    for page in pdf.pages:
+        words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
+        tipo_label = next((w for w in words if w["text"].strip().upper() == "TIPO"), None)
+        marca_label = next((w for w in words if w["text"].strip().upper() == "MARCA"), None)
+        if not tipo_label or not marca_label:
+            continue
+        if abs(tipo_label["top"] - marca_label["top"]) > 6:
+            continue  # não estão na mesma linha, provavelmente não é o par certo
+
+        boundary_x = marca_label["x0"]
+        label_bottom = max(tipo_label["bottom"], marca_label["bottom"])
+
+        # limite inferior da janela de busca: próximo label conhecido (CALIBRE),
+        # senão um valor fixo generoso.
+        calibre_label = next((w for w in words if w["text"].strip().upper() == "CALIBRE"), None)
+        lower_bound = calibre_label["top"] if calibre_label and calibre_label["top"] > label_bottom else label_bottom + 40
+
+        value_words = [
+            w for w in words
+            if label_bottom - 1 < w["top"] < lower_bound
+            and w["text"].strip().upper() not in ("TIPO", "MARCA")
+        ]
+        if not value_words:
+            continue
+
+        value_words.sort(key=lambda w: (round(w["top"]), w["x0"]))
+        tipo_words = [w["text"] for w in value_words if w["x0"] < boundary_x]
+        marca_words = [w["text"] for w in value_words if w["x0"] >= boundary_x]
+        tipo_val = " ".join(tipo_words).strip()
+        marca_val = " ".join(marca_words).strip()
+        if tipo_val or marca_val:
+            return tipo_val, marca_val
+    return "", ""
+
+
+# ---------------------------------------------------------------------------
+# Classificadores / geradores de nome — um por tipo de documento
+# ---------------------------------------------------------------------------
+
+def rule_craf(full_text_norm, full_text, pdf):
+    if "certificado de registro de arma de fogo" not in full_text_norm:
+        return None
+    tipo, marca = extract_tipo_marca_by_position(pdf)
+    if not tipo and not marca:
+        return None, "CRAF: não consegui ler TIPO/MARCA (verifique manualmente)."
+    name = join_parts("CRAF", tipo, marca)
+    return name, None
+
+
+def rule_cac(full_text_norm, full_text, pdf):
+    if "certificado de registro" not in full_text_norm:
+        return None
+    if "atividades autorizadas" not in full_text_norm:
+        return None
+    name = join_parts("Certificado de Registro CAC")
+    return name, None
+
+
+def rule_ctf(full_text_norm, full_text, pdf):
+    # Exige também "cadastros tecnicos federais" para não confundir com
+    # outros documentos que apenas MENCIONAM "Certificado de Regularidade"
+    # de passagem (ex.: a Autorização do SIMAF cita esse termo num item).
+    if "certificado de regularidade" not in full_text_norm:
+        return None
+    if "cadastros tecnicos federais" not in full_text_norm:
+        return None
+    tables = extract_all_tables(pdf)
+    valido_ate = None
+    res = table_lookup(tables, {"valido_ate": "cr valido ate"})
+    if cell_value(res, "valido_ate"):
+        m = re.search(DATE_RE, cell_value(res, "valido_ate"))
+        if m:
+            valido_ate = m.group(1)
+    if not valido_ate:
+        # fallback: registro (numero) + 3 datas na mesma linha; a 3a e a "valido ate"
+        m = re.search(r"\d{5,}\s+" + DATE_RE + r"\s+" + DATE_RE + r"\s+" + DATE_RE, full_text)
+        if m:
+            valido_ate = m.group(3)
+    if not valido_ate:
+        return None, "CTF/IBAMA: não encontrei a data 'CR válido até'."
+    name = join_parts("CTF IBAMA Val", date_to_dash(valido_ate))
+    return name, None
+
+
+def rule_simaf(full_text_norm, full_text, pdf):
+    if "autorizacao de controle de especies exoticas invasoras" not in full_text_norm:
+        return None
+    tables = extract_all_tables(pdf)
+    res = table_lookup(tables, {"propriedade": "propriedade", "cidade": "cidade"})
+    propriedade = cell_value(res, "propriedade")
+    cidade = cell_value(res, "cidade")
+    m = re.search(r"Fim\s*:?\s*" + DATE_RE, full_text, re.IGNORECASE)
+    if not m:
+        return None, "SIMAF: não encontrei a 'Data Fim'."
+    data_fim = m.group(1)
+    if not propriedade and not cidade:
+        return None, "SIMAF: não consegui ler Nome da propriedade / Cidade (verifique manualmente)."
+    name = join_parts("SIMAF", propriedade, cidade, "Val", date_to_dash(data_fim))
+    return name, None
+
+
+def normalize_finalidade(raw):
+    n = norm(raw)
+    # "esportivo" cobre tanto "Tiro Esportivo" quanto "Tiro Desportivo"
+    # (os dois termos aparecem em guias reais, dependendo do órgão emissor).
+    if "esportivo" in n:
+        return "Tiro Desportivo"
+    if "caca" in n and "treinamento" in n:
+        return "Caça-Treinamento"
+    if "caca" in n:
+        return "Caça"
+    return raw.strip()
+
+
+def extract_local_destino_block(full_text):
+    """Texto entre os títulos '3. LOCAL DE DESTINO' e '4. FINALIDADE'."""
+    m = re.search(
+        r"3\.\s*LOCAL DE DESTINO(.*?)4\.\s*FINALIDADE",
+        full_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    return m.group(1) if m else ""
+
+
+STREET_KEYWORDS_RE = re.compile(
+    r"\b(RUA|AVENIDA|AV\.?|TRAVESSA|TRAV\.?|ESTRADA|EST\.?|RODOVIA|ROD\.?|"
+    r"ALAMEDA|AL\.?|PRA[CÇ]A)\b",
+    re.IGNORECASE,
+)
+
+
+def strip_leading_code(value):
+    """Remove um código numérico na frente do nome, ex.: '106620 - CLUBE...'
+    -> 'CLUBE...'."""
+    return re.sub(r"^\s*\d+\s*-\s*", "", value).strip()
+
+
+def extract_nome_from_endereco(raw):
+    """
+    De um campo "Endereço e CEP:" que começa com o nome do local seguido
+    do endereço (ex.: "CLUBE INDEPENDENCIA CAÇA E TIRO RUA JOSE MORAES
+    BORGES 1300 BAIRRO MAUA, XXX, Vacaria, XXX"), devolve só o nome do
+    local, cortando a partir da primeira palavra de logradouro (RUA, AV,
+    etc.).
+    """
+    m = STREET_KEYWORDS_RE.search(raw)
+    if m:
+        nome = raw[:m.start()].strip().strip(",").strip()
+        if nome:
+            return nome
+    # Não achou palavra de logradouro: usa o primeiro pedaço antes da
+    # primeira vírgula como aproximação.
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    return parts[0] if parts else raw.strip()
+
+
+def extract_destino(full_text, finalidade):
+    """
+    Local de destino da Guia de Tráfego, conforme a finalidade:
+    - Caça: "Cidade-UF" tirado de "País / Cidade / UF / Aeroporto-Porto:"
+    - Caça-Treinamento: nome do local, tirado do início de "Endereço e CEP:"
+    - Tiro Desportivo: valor de "Nome / Razão Social:", sem o código na frente
+    Só procura dentro do bloco "3. LOCAL DE DESTINO" (não confundir com o
+    "2. LOCAL DE ORIGEM", que tem campos parecidos).
+    """
+    block = extract_local_destino_block(full_text)
+    if not block:
+        return ""
+
+    fin_norm = norm(finalidade)
+
+    if "treinamento" in fin_norm:
+        m = re.search(r"Endere[cç]o e CEP:?\s*([^\n]+)", block, re.IGNORECASE)
+        if m:
+            return extract_nome_from_endereco(m.group(1).strip())
+        return ""
+
+    if "esportivo" in fin_norm:
+        m = re.search(r"Nome\s*/\s*Raz[aã]o Social:?\s*([^\n]+)", block, re.IGNORECASE)
+        if m:
+            return strip_leading_code(m.group(1).strip())
+        return ""
+
+    if "caca" in fin_norm:
+        m = re.search(
+            r"P[aá][ií]s\s*/\s*Cidade\s*/\s*UF\s*/\s*Aeroporto-?Porto:?\s*([^\n]+)",
+            block,
+            re.IGNORECASE,
+        )
+        if not m:
+            return ""
+        parts = [p.strip() for p in m.group(1).split("/")]
+        if len(parts) >= 3 and parts[1] and parts[2]:
+            return f"{parts[1]}-{parts[2]}"
+        return ""
+
+    return ""
+
+
+def destino_sem_nome(destino):
+    """Destino vazio, só 'XXX' (campo em branco na guia) ou que começa por um
+    logradouro (RUA, AV...) em vez do nome do local."""
+    d = (destino or "").strip()
+    if not d or set(d.upper()) <= set("X- "):
+        return True
+    return STREET_KEYWORDS_RE.match(d) is not None
+
+
+def extract_destino_cidade_uf(full_text):
+    """'Cidade-UF' do campo 'País / Cidade / UF / Aeroporto-Porto' do bloco
+    '3. LOCAL DE DESTINO' (ignora partes 'XXX'). Só a cidade se não houver UF."""
+    block = extract_local_destino_block(full_text)
+    m = re.search(
+        r"P[aá][ií]s\s*/\s*Cidade\s*/\s*UF\s*/\s*Aeroporto-?Porto:?\s*([^\n]+)",
+        block,
+        re.IGNORECASE,
+    )
+    if not m:
+        return ""
+    parts = [p.strip() for p in m.group(1).split("/")]
+    preenchido = lambda v: v and not set(v.upper()) <= {"X"}  # noqa: E731
+    cidade = parts[1] if len(parts) > 1 and preenchido(parts[1]) else ""
+    uf = parts[2] if len(parts) > 2 and preenchido(parts[2]) else ""
+    if not cidade:
+        return ""
+    return f"{cidade}-{uf}" if uf else cidade
+
+
+def rule_gt(full_text_norm, full_text, pdf):
+    if "guia" not in full_text_norm:
+        return None
+    tables = extract_all_tables(pdf)
+    res = table_lookup(tables, {"tipo": "especie", "modelo": "modelo"})
+    tipo = compound_cell_value(res, "tipo", "especie")
+    modelo = compound_cell_value(res, "modelo", "modelo")
+
+    m_fin = re.search(r"FINALIDADE\s*\n\s*([^\n]+)", full_text, re.IGNORECASE)
+    finalidade = normalize_finalidade(m_fin.group(1)) if m_fin else ""
+
+    destino = extract_destino(full_text, finalidade)
+    if destino_sem_nome(destino):
+        destino = extract_destino_cidade_uf(full_text) or destino
+
+    m_val = re.search(
+        r"Validade\s*:?\s*" + DATE_RE + r"\s*(?:à|a|-|ate|até)\s*" + DATE_RE,
+        full_text,
+        re.IGNORECASE,
+    )
+    if not m_val:
+        return None, "GT: não encontrei as duas datas de Validade."
+    segunda_data = m_val.group(2)
+
+    if not tipo and not modelo:
+        return None, "GT: não consegui ler Tipo/Modelo na tabela de produtos (verifique manualmente)."
+
+    name = join_parts("GT", tipo, modelo, finalidade, destino, "Val", date_to_dash(segunda_data))
+    return name, None
+
+
+# Ordem importa: do mais específico para o mais genérico.
+RULES = [rule_craf, rule_cac, rule_ctf, rule_simaf, rule_gt]
+
+
+def classify_and_name(pdf_path):
+    """
+    Retorna (novo_nome_sem_extensao, motivo_falha).
+    Se novo_nome for None, motivo_falha explica o porquê (ou None se
+    simplesmente nenhuma regra bateu).
+    """
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            full_text = extract_full_text(pdf)
+            full_text_norm = norm(full_text)
+            first_error = None
+            for rule in RULES:
+                result = rule(full_text_norm, full_text, pdf)
+                if result is None:
+                    continue
+                name, err = result
+                if name:
+                    return name, None
+                if first_error is None:
+                    first_error = err
+                # palavra-chave bateu mas a extração falhou: tenta as
+                # próximas regras antes de desistir (evita falso-positivo
+                # de uma regra bloquear a regra correta).
+            return None, first_error
+    except Exception as exc:
+        return None, f"erro ao ler o PDF: {exc}"
+
+
+# ---------------------------------------------------------------------------
+# Execução principal
+# ---------------------------------------------------------------------------
+
+def unique_target(folder, base_name, ext, taken, exclude_path=None):
+    """
+    Gera um nome de arquivo que não colide com nenhum outro arquivo já
+    existente na pasta, nem com nomes já reservados nesta mesma execução.
+
+    'exclude_path' é o próprio arquivo que está sendo renomeado: se o nome
+    candidato já existir em disco mas for esse mesmo arquivo (ou seja, ele
+    já está com o nome certo), isso NÃO conta como colisão — evita rodar o
+    script de novo e acabar sobrescrevendo um arquivo com outro.
+    """
+    def is_free(name):
+        if name in taken:
+            return False
+        p = folder / name
+        if not p.exists():
+            return True
+        if exclude_path is not None:
+            try:
+                if p.resolve() == exclude_path.resolve():
+                    return True
+            except OSError:
+                pass
+        return False
+
+    candidate = base_name + ext
+    if is_free(candidate):
+        return candidate
+    n = 2
+    while True:
+        candidate = f"{base_name} ({n}){ext}"
+        if is_free(candidate):
+            return candidate
+        n += 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Renomeia PDFs de acordo com o conteúdo.")
+    parser.add_argument("--pasta", default=None, help="Caminho da pasta com os PDFs (padrão: pasta deste script).")
+    parser.add_argument("--aplicar", action="store_true", help="Aplica as renomeações. Sem essa flag, só simula.")
+    args = parser.parse_args()
+
+    folder = Path(args.pasta) if args.pasta else Path(__file__).resolve().parent
+    if not folder.is_dir():
+        print(f"Pasta não encontrada: {folder}")
+        sys.exit(1)
+
+    pdf_files = sorted(p for p in folder.iterdir() if p.suffix.lower() == ".pdf")
+    if not pdf_files:
+        print(f"Nenhum PDF encontrado em: {folder}")
+        return
+
+    modo = "APLICANDO renomeações" if args.aplicar else "SIMULAÇÃO (nada será alterado)"
+    print(f"Pasta: {folder}")
+    print(f"Modo: {modo}")
+    print(f"Arquivos PDF encontrados: {len(pdf_files)}\n")
+
+    planned = []
+    unclassified = []
+    taken_names = set()
+
+    for pdf_path in pdf_files:
+        new_base, err = classify_and_name(pdf_path)
+        if new_base:
+            new_name = unique_target(folder, new_base, pdf_path.suffix, taken_names, exclude_path=pdf_path)
+            taken_names.add(new_name)
+            planned.append((pdf_path, new_name))
+        else:
+            reason = err or "conteúdo não corresponde a nenhuma regra conhecida."
+            unclassified.append((pdf_path, reason))
+
+    print("RENOMEAÇÕES PLANEJADAS:")
+    if not planned:
+        print("  (nenhuma)")
+    for old_path, new_name in planned:
+        same = old_path.name == new_name
+        marker = "= (já está correto)" if same else "->"
+        print(f"  {old_path.name}\n    {marker} {new_name}")
+
+    print("\nNÃO CLASSIFICADOS / REVISAR MANUALMENTE:")
+    if not unclassified:
+        print("  (nenhum)")
+    for old_path, reason in unclassified:
+        print(f"  {old_path.name}\n    motivo: {reason}")
+
+    if args.aplicar:
+        print("\nAplicando renomeações...")
+        for old_path, new_name in planned:
+            if old_path.name == new_name:
+                continue
+            target = old_path.with_name(new_name)
+            # Trava de segurança final: nunca sobrescrever um arquivo
+            # diferente que já exista com esse nome (protege mesmo que o
+            # script seja rodado de novo por engano ou em condições
+            # inesperadas).
+            if target.exists():
+                print(f"  AVISO: pulei '{old_path.name}' porque já existe um arquivo "
+                      f"diferente chamado '{new_name}'. Renomeie manualmente se necessário.")
+                continue
+            old_path.rename(target)
+            print(f"  Renomeado: {old_path.name} -> {new_name}")
+        print("Concluído.")
+    else:
+        print("\nNenhum arquivo foi alterado (modo simulação).")
+        print("Para aplicar de fato, rode novamente com:  --aplicar")
+
+
+if __name__ == "__main__":
+    main()

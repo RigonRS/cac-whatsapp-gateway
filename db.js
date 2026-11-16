@@ -37,6 +37,12 @@ db.exec(`
     phone TEXT,
     nome TEXT
   );
+  CREATE TABLE IF NOT EXISTS docs_extraidos (
+    item_id TEXT PRIMARY KEY,
+    chave TEXT,
+    dados TEXT,
+    ts INTEGER
+  );
 `);
 
 // Migração: adiciona colunas novas em bancos já existentes
@@ -189,4 +195,17 @@ function setContadorRelatorio(jid, count, ts) {
   db.prepare(`UPDATE chats SET report_count = ?, report_count_ts = ? WHERE jid = ?`).run(count, ts, jid);
 }
 
-module.exports = { registrarMensagem, listarChats, listarMensagens, getMensagem, getChatPhone, marcarLido, marcarTodosLidos, marcarNaoLido, setReacao, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens, marcarResolvida, setContadorRelatorio };
+// ---- Cache da leitura dos PDFs da pasta DOCUMENTOS PORTAL ----
+// "chave" muda quando o conteúdo do arquivo (ou a versão do extrator) muda.
+function getExtracaoDoc(itemId, chave) {
+  const r = db.prepare(`SELECT chave, dados FROM docs_extraidos WHERE item_id = ?`).get(itemId);
+  if (!r || r.chave !== chave) return null;
+  try { return JSON.parse(r.dados); } catch (e) { return null; }
+}
+function salvarExtracaoDoc(itemId, chave, dados) {
+  db.prepare(`INSERT INTO docs_extraidos (item_id, chave, dados, ts) VALUES (?, ?, ?, ?)
+    ON CONFLICT(item_id) DO UPDATE SET chave = excluded.chave, dados = excluded.dados, ts = excluded.ts`)
+    .run(itemId, chave, JSON.stringify(dados), Date.now());
+}
+
+module.exports = { getExtracaoDoc, salvarExtracaoDoc, registrarMensagem, listarChats, listarMensagens, getMensagem, getChatPhone, marcarLido, marcarTodosLidos, marcarNaoLido, setReacao, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens, marcarResolvida, setContadorRelatorio };

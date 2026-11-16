@@ -127,4 +127,63 @@ async function salvarArquivoCliente(title, filename, buffer) {
   return res.json();
 }
 
-module.exports = { getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getOrcamentos, getDemandas, getArquivoDados, getConfigRelatorios, salvarArquivoCliente, DOCS_PATH, SUBPASTA_RECEBIDOS };
+// ---- Pasta "DOCUMENTOS PORTAL" do cliente (importação de documentos no Gestão) ----
+const SUBPASTA_PORTAL = 'DOCUMENTOS PORTAL';
+
+// Arquivos (sem subpastas) de uma pasta do site. null = pasta não existe.
+async function listarPastaSite(folderPath) {
+  const t = await getMsToken();
+  const siteId = await getDocsSiteId();
+  let url = `${GRAPH}/sites/${siteId}/drive/root:/${encPath(folderPath)}:/children`
+    + '?$select=id,name,size,eTag,cTag,webUrl,lastModifiedDateTime,file&$top=999';
+  const itens = [];
+  while (url) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${t}` } });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`listar "${folderPath}": HTTP ${res.status}`);
+    const j = await res.json();
+    itens.push(...(j.value || []).filter((i) => i.file));
+    url = j['@odata.nextLink'] || null;
+  }
+  return itens;
+}
+
+// Nome da pasta = cliente.Title. Tenta as formas NFC e NFD do nome (acentos),
+// como o worker do portal (cac-portal/worker.js, listFolderSite).
+async function listarDocumentosPortal(title) {
+  const tentadas = new Set();
+  for (const nome of [title, title.normalize('NFC'), title.normalize('NFD')]) {
+    if (tentadas.has(nome)) continue;
+    tentadas.add(nome);
+    const pasta = `${DOCS_PATH}/${nome}/${SUBPASTA_PORTAL}`;
+    const itens = await listarPastaSite(pasta);
+    if (itens !== null) return { pasta, itens };
+  }
+  return null;
+}
+
+async function baixarArquivo(itemId) {
+  const t = await getMsToken();
+  const siteId = await getDocsSiteId();
+  const res = await fetch(`${GRAPH}/sites/${siteId}/drive/items/${encodeURIComponent(itemId)}/content`, {
+    headers: { Authorization: `Bearer ${t}` },
+  });
+  if (!res.ok) throw new Error(`baixar arquivo: HTTP ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// Renomeia um arquivo do site. Se já existir outro com o mesmo nome, o Graph recusa (409).
+async function renomearArquivo(itemId, novoNome) {
+  const t = await getMsToken();
+  const siteId = await getDocsSiteId();
+  const res = await fetch(`${GRAPH}/sites/${siteId}/drive/items/${encodeURIComponent(itemId)}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: novoNome }),
+  });
+  if (res.status === 409) throw new Error('já existe outro arquivo com esse nome na pasta');
+  if (!res.ok) throw new Error(`renomear: HTTP ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+module.exports = { getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getOrcamentos, getDemandas, getArquivoDados, getConfigRelatorios, salvarArquivoCliente, listarDocumentosPortal, baixarArquivo, renomearArquivo, DOCS_PATH, SUBPASTA_RECEBIDOS, SUBPASTA_PORTAL };

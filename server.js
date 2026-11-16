@@ -13,6 +13,7 @@ const db = require('./db');
 const wa = require('./wa');
 const agendador = require('./agendador');
 const graph = require('./graph');
+const docsPortal = require('./docsportal');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
@@ -239,6 +240,29 @@ app.post('/relatorios/testar', requireAuth, async (req, res) => {
     res.json({ ok: true, ...r });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ---- Importação de documentos da pasta "DOCUMENTOS PORTAL" (usada pelo Gestão) ----
+app.get('/docs-portal/cliente/:id', requireAuth, async (req, res) => {
+  try {
+    const cliente = await docsPortal.clientePorId(req.params.id);
+    res.json(await docsPortal.lerPastaCliente(cliente));
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+app.post('/docs-portal/renomear', requireAuth, async (req, res) => {
+  try {
+    const { clienteId, itens } = req.body || {};
+    if (!clienteId || !Array.isArray(itens) || !itens.length) return res.status(400).json({ error: 'clienteId e itens são obrigatórios' });
+    res.json({ resultados: await docsPortal.renomear(clienteId, itens, req.atendente) });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
+app.post('/docs-portal/varredura', requireAuth, (req, res) => {
+  docsPortal.iniciarVarredura(req.atendente);
+  res.json(docsPortal.estadoVarredura());
+});
+
+app.get('/docs-portal/varredura', requireAuth, (req, res) => res.json(docsPortal.estadoVarredura()));
 
 // ---- WhatsApp: liga os eventos ao banco e ao tempo real ----
 wa.initWA({
