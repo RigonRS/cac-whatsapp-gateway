@@ -94,4 +94,7 @@ async function requireAuth(req, res, next) {
   }
 }
 
-module.exports = { verifyIdToken, nomeAtendente, isAdmin, requireAuth, atendenteAutorizado };
+// Operadores da equipe (lista do painel "quem está online").
+const NOMES_OPERADORES = ['Andrieli', 'Geison', 'Janaína', 'Matheus', 'Priscila', 'Simone'];
+
+module.exports = { verifyIdToken, nomeAtendente, isAdmin, requireAuth, atendenteAutorizado, NOMES_OPERADORES };

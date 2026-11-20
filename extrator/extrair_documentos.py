@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Extrai os dados de CRAF, Guia de Tráfego, SIMAF e CTF dos PDFs da pasta
+Extrai os dados de CRAF, Guia de Tráfego, SIMAF, CTF, Avaliação Psicológica e Teste de Tiro dos PDFs da pasta
 "DOCUMENTOS PORTAL" dos clientes, para importação no CAC Gestão.
 
 O nome sugerido de cada arquivo vem do renomeador (renomeador.py, cópia
@@ -96,6 +96,10 @@ def tipo_documento(tn, texto):
         return "simaf"
     if "guia de trafego" in tn or re.search(r"\bgte\s*n", tn):
         return "gt"
+    if "laudo psicologico" in tn or ("avaliacao psicologica" in tn and "manuseio de arma" in tn):
+        return "ap"
+    if "comprovante de capacidade tecnica" in tn:
+        return "tt"
     # O título precisa estar no começo: outros documentos (ex.: Autorização de
     # Caça) citam o CRAF numa nota no fim do texto.
     inicio = "\n".join(tn.split("\n")[:12])
@@ -319,11 +323,15 @@ def extrair_gt(texto, tn, pdf):
     sei = "6. validade" in tn or not re.search(r"\bgte\s*n", tn)  # modelo PF/SEI, sem nº de GTE
     c["modelo_documento"] = "PF-SEI" if sei else "GTE"
     c["numero_gt"] = busca(r"GTE\s*N[ºo°]\s*:?\s*(\d+)", texto)
-    c["numero_sei"] = busca(r"SEI n[ºo°]\s*(\d+)", texto) or busca(r"C[óo]digo verificador\s*:\s*(\d+)", texto)
+    # Nº SEI do documento: o "Código verificador" (o primeiro "SEI nº" pode ser o nº do processo, ex.: 08389.005762/2026-44)
+    c["numero_sei"] = (busca(r"C[óo]digo verificador\s*:\s*(\d+)", texto)
+                       or busca(r"SEI n[ºo°]\s*(\d{6,})(?![\d./])", texto) or busca(r"SEI n[ºo°]\s*(\d+)", texto))
     if sei and not c["numero_gt"]:
         c["numero_gt"] = c["numero_sei"]  # guia PF/SEI não tem nº de GTE: usa o nº SEI
     c["data_emissao"] = iso(busca(r"RM\s*:.*?\bde\s+" + DATE, texto))
-    m = re.search(r"Validade\s*:?\s*" + DATE + r"\s*(?:à|a|-|ate|até)\s*" + DATE, texto, re.IGNORECASE)
+    m = (re.search(r"Validade\s*:?\s*" + DATE + r"\s*(?:à|a|-|ate|até)\s*" + DATE, texto, re.IGNORECASE)
+         # guia manual da PF: "PRAZO DE VALIDADE DA GTE: - 30 (trinta) dias - de 11/08/2026 a 10/09/2026"
+         or re.search(r"PRAZO DE VALIDADE.*?de\s+" + DATE + r"\s+a\s+" + DATE, texto, re.IGNORECASE | re.DOTALL))
     c["validade_inicio"] = iso(m.group(1)) if m else None
     c["validade"] = iso(m.group(2)) if m else iso(busca(r"\d\.\s*VALIDADE\s*" + DATE, texto))
     if not c["data_emissao"]:
@@ -335,6 +343,8 @@ def extrair_gt(texto, tn, pdf):
 
     m_fin = re.search(r"4\.\s*FINALIDADE[ \t]*([^\n]*)\n?([^\n]*)", texto, re.IGNORECASE)
     fin_raw = (m_fin.group(1).strip() or m_fin.group(2).strip()) if m_fin else ""
+    if not fin_raw:  # guia manual da PF: "FINALIDADE DO TRÂNSITO:" e a opção marcada na linha de baixo
+        fin_raw = busca(r"FINALIDADE[^\n]*\n\s*([^\n]+)", texto)
     finalidade = R.normalize_finalidade(fin_raw) if fin_raw else ""
     c["finalidade"] = finalidade
 
@@ -358,6 +368,10 @@ def extrair_gt(texto, tn, pdf):
             c["destino_cidade"], c["destino_uf"] = m_cid.group(1).strip(), m_cid.group(2).upper()
         elif limpa(destino):
             c["destino_nome"] = limpa(destino)
+    if not c["destino_cidade"]:  # guia manual da PF: "Município: Vacaria UF: RS"
+        m_mun = re.search(r"Munic[ií]pio:\s*(.+?)\s+UF:\s*([A-Z]{2})\b", R.extract_local_destino_block(texto), re.IGNORECASE)
+        if m_mun:
+            c["destino_cidade"], c["destino_uf"] = m_mun.group(1).strip(), m_mun.group(2).upper()
     c["destino"] = R.extract_destino(texto, finalidade)
 
     c["produtos"] = produtos_gt(todas_tabelas(pdf))
@@ -431,6 +445,34 @@ def extrair_simaf(texto, tn, pdf):
 
 
 # ---------------------------------------------------------------------------
+# Avaliação psicológica e Teste de tiro (validade = data do exame + 1 ano)
+# ---------------------------------------------------------------------------
+
+def cpfs_no_texto(texto):
+    """CPFs citados (o OCR às vezes troca o ponto por vírgula)."""
+    return sorted({so_digitos(x) for x in re.findall(r"\b\d{3}[.,]?\d{3}[.,]?\d{3}\s*-?\s*\d{2}\b", texto)})
+
+
+def extrair_ap(texto, tn, pdf):
+    dt = R.data_avaliacao_psicologica(tn)
+    c = {"data_exame": dt.isoformat() if dt else None,
+         "validade": R.mais_um_ano(dt).isoformat() if dt else None,
+         "cpfs": cpfs_no_texto(texto)}
+    return c, ([] if dt else ["Avaliação Psicológica: não encontrei a data da avaliação."])
+
+
+def extrair_tt(texto, tn, pdf):
+    ds = R.datas_no_texto(tn)
+    dt = max(ds) if ds else None
+    c = {"tipo_arma": R.tipo_arma_teste(tn), "data_exame": dt.isoformat() if dt else None,
+         "validade": R.mais_um_ano(dt).isoformat() if dt else None, "cpfs": cpfs_no_texto(texto)}
+    avisos = [] if dt else ["Teste de Tiro: não encontrei a data do teste."]
+    if not c["tipo_arma"]:
+        avisos.append("Teste de Tiro: não identifiquei o tipo de arma — confira no editar.")
+    return c, avisos
+
+
+# ---------------------------------------------------------------------------
 # CTF / IBAMA (Certificado de Regularidade)
 # ---------------------------------------------------------------------------
 
@@ -458,7 +500,8 @@ def extrair_ctf(texto, tn, pdf):
 # Principal
 # ---------------------------------------------------------------------------
 
-EXTRATORES = {"craf": extrair_craf, "gt": extrair_gt, "simaf": extrair_simaf, "ctf": extrair_ctf}
+EXTRATORES = {"craf": extrair_craf, "gt": extrair_gt, "simaf": extrair_simaf, "ctf": extrair_ctf,
+              "ap": extrair_ap, "tt": extrair_tt}
 
 
 def processar(caminho):
@@ -468,15 +511,17 @@ def processar(caminho):
         nome_base, motivo = R.classify_and_name(caminho)
         saida["nome_sugerido_base"], saida["motivo_nome"] = nome_base, motivo
         with pdfplumber.open(caminho) as pdf:
-            texto = R.extract_full_text(pdf)
+            texto, via_ocr = R.texto_do_pdf(pdf)  # PDF sem texto (imagem): lê por OCR
             tn = R.norm(texto)
-            if len(texto.strip()) < 200:
-                saida["avisos"].append("PDF sem texto (provavelmente imagem ou foto): não dá para ler os dados.")
             tipo = tipo_documento(tn, texto)
             saida["tipo"] = tipo
             if tipo in EXTRATORES:
                 campos, avisos = EXTRATORES[tipo](texto, tn, pdf)
                 saida["campos"], saida["avisos"] = campos, avisos
+            if via_ocr:
+                saida["avisos"].append("Lido por OCR (PDF era imagem): confira os dados.")
+            elif len(texto.strip()) < R.MIN_TEXTO:
+                saida["avisos"].append("PDF sem texto (provavelmente imagem ou foto): não dá para ler os dados.")
     except Exception as exc:  # um PDF ruim não derruba os outros
         saida["avisos"].append(f"erro ao ler o PDF: {exc}")
     return saida

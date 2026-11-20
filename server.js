@@ -8,7 +8,8 @@ const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
 
-const { requireAuth, verifyIdToken, nomeAtendente, atendenteAutorizado } = require('./auth');
+const auth = require('./auth');
+const { requireAuth, verifyIdToken, nomeAtendente, atendenteAutorizado } = auth;
 const db = require('./db');
 const wa = require('./wa');
 const agendador = require('./agendador');
@@ -204,6 +205,34 @@ app.post('/forward', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---- Contato digitando / gravando: o painel pede ao abrir a conversa ----
+app.post('/presence/subscribe', requireAuth, async (req, res) => {
+  const jids = [].concat((req.body || {}).jids || (req.body || {}).jid || []).slice(0, 5);
+  for (const j of jids) await wa.assinarPresenca(String(j));
+  res.json({ ok: true });
+});
+
+// ---- Operadores online (o Gestão avisa "estou aqui" a cada minuto) ----
+const ultimoSinalOperador = new Map(); // nome -> instante do último sinal
+const OPERADOR_ONLINE_MS = 150 * 1000;
+app.post('/operadores/ping', requireAuth, (req, res) => {
+  ultimoSinalOperador.set(req.atendente, Date.now());
+  res.json({ ok: true });
+});
+app.post('/operadores/sair', requireAuth, (req, res) => {
+  ultimoSinalOperador.delete(req.atendente);
+  res.json({ ok: true });
+});
+app.get('/operadores', requireAuth, (req, res) => {
+  if (!req.isAdmin) return res.status(403).json({ error: 'Apenas administradores.' });
+  const agora = Date.now();
+  const operadores = auth.NOMES_OPERADORES.map(nome => {
+    const ultimo = ultimoSinalOperador.get(nome) || null;
+    return { nome, online: !!ultimo && agora - ultimo < OPERADOR_ONLINE_MS, ultimo };
+  });
+  res.json({ operadores });
+});
+
 // ---- Editar / apagar mensagem ----
 // Editar: só mensagens de texto enviadas por nós, até 15 minutos depois do envio.
 // Apagar para todos: só as nossas, até 2 dias (o WhatsApp recusa depois disso).
@@ -323,6 +352,7 @@ wa.initWA({
   onRead: (jid) => { db.marcarLido(jid); io.emit('read', { jid }); },
   onReaction: (d) => io.emit('reaction', d),
   onMessageUpdate: (d) => io.emit('message-update', d),
+  onPresence: (d) => io.emit('presence', d),
   onSync: (info) => io.emit('sync', info),
 });
 

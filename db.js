@@ -172,7 +172,7 @@ function limparNomeDono(nome) {
 
 // Busca por conteúdo das mensagens; devolve a mais recente por conversa
 function buscarMensagens(termo, limite = 40) {
-  const rows = db.prepare(`SELECT jid, body, ts FROM messages WHERE body LIKE ? ORDER BY ts DESC LIMIT 500`).all(`%${termo}%`);
+  const rows = db.prepare(`SELECT id, jid, body, ts FROM messages WHERE body LIKE ? AND COALESCE(hidden, 0) = 0 ORDER BY ts DESC LIMIT 500`).all(`%${termo}%`);
   const vistos = new Set(); const out = [];
   for (const r of rows) { if (vistos.has(r.jid)) continue; vistos.add(r.jid); out.push(r); if (out.length >= limite) break; }
   return out;

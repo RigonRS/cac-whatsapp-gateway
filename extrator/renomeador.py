@@ -33,6 +33,21 @@ acordo com o tipo de documento identificado:
 5) Contém "CERTIFICADO DE REGULARIDADE" (CTF/IBAMA)
    -> "CTF IBAMA Val DD-MM-AAAA.pdf"
 
+6) Laudo de Avaliação Psicológica (manuseio de arma de fogo)
+   -> "Avaliação Psicológica Val DD-MM-AAAA.pdf"  (validade = data da avaliação + 1 ano)
+
+7) Comprovante de Capacidade Técnica (Teste de Tiro)
+   -> "Teste de Tiro <Tipo> Val DD-MM-AAAA.pdf"   (validade = data do teste + 1 ano)
+
+Guias de Tráfego também com as finalidades "Mudança de Local de Acervo"
+(inclusive a guia manual da PF de retirada de arma) e "Manutenção" (ida ao
+armeiro): destino = "Cidade-UF".
+
+PDF sem texto (impresso como imagem, escaneado ou "Imprimir para PDF"): o
+texto é lido por OCR com o Tesseract, se ele estiver instalado no computador
+(https://github.com/UB-Mannheim/tesseract). O idioma português fica na
+subpasta "tessdata" ao lado deste script.
+
 Arquivos cujo conteúdo não se encaixa em nenhuma regra, ou cujos campos
 não puderam ser lidos com segurança, NÃO são renomeados — eles aparecem
 na lista "NÃO CLASSIFICADOS / REVISAR MANUALMENTE" ao final da execução.
@@ -61,8 +76,13 @@ Uso pelo terminal (opcional):
 """
 
 import argparse
+import datetime
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -116,6 +136,111 @@ def join_parts(*parts):
 
 def extract_full_text(pdf):
     return "\n".join((page.extract_text() or "") for page in pdf.pages)
+
+
+# ---------------------------------------------------------------------------
+# OCR (para PDFs sem texto: escaneados ou "Imprimir para PDF")
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+MIN_TEXTO = 200  # menos que isso = o PDF praticamente não tem texto
+
+
+def tesseract_cmd():
+    for c in (os.environ.get("TESSERACT_CMD"), shutil.which("tesseract"),
+              r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+              r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"):
+        if c and Path(c).exists():
+            return c
+    return None
+
+
+def ocr_pdf(pdf, max_paginas=3):
+    """Texto das primeiras páginas lido por OCR ("" se o Tesseract não estiver instalado)."""
+    cmd = tesseract_cmd()
+    if not cmd:
+        return ""
+    tessdata = SCRIPT_DIR / "tessdata"
+    extra = ["--tessdata-dir", str(tessdata)] if (tessdata / "por.traineddata").exists() else []
+    criar = {"creationflags": 0x08000000} if os.name == "nt" else {}  # sem janela preta no Windows
+    textos = []
+    with tempfile.TemporaryDirectory() as d:
+        for i, page in enumerate(pdf.pages[:max_paginas]):
+            img = os.path.join(d, f"p{i}.png")
+            page.to_image(resolution=300).original.save(img)
+            r = subprocess.run([cmd, img, "stdout", "-l", "por", *extra],
+                               capture_output=True, timeout=180, **criar)
+            textos.append(r.stdout.decode("utf-8", "replace"))
+    return "\n".join(textos)
+
+
+_OCR_FEITO = {}  # arquivo -> texto lido por OCR (evita ler duas vezes o mesmo PDF)
+
+
+def texto_do_pdf(pdf):
+    """(texto, veio_do_ocr). Usa o OCR só quando o PDF não tem texto."""
+    texto = extract_full_text(pdf)
+    if len(texto.strip()) >= MIN_TEXTO:
+        return texto, False
+    chave = getattr(getattr(pdf, "stream", None), "name", None)
+    lido = _OCR_FEITO.get(chave) if chave else None
+    if lido is None:
+        lido = ocr_pdf(pdf)
+        if chave:
+            _OCR_FEITO[chave] = lido
+    if len(lido.strip()) > len(texto.strip()):
+        return lido, True
+    return texto, False
+
+
+# ---------------------------------------------------------------------------
+# Datas por extenso (laudos e testes de tiro)
+# ---------------------------------------------------------------------------
+
+MESES = {"janeiro": 1, "fevereiro": 2, "marco": 3, "abril": 4, "maio": 5, "junho": 6,
+         "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12}
+
+
+def _data_ok(d, m, a):
+    try:
+        a = int(a)
+        if a < 100:
+            a += 2000
+        dt = datetime.date(a, int(m), int(d))
+    except (ValueError, TypeError):
+        return None
+    hoje = datetime.date.today()
+    if dt.year < 2015 or dt > hoje + datetime.timedelta(days=60):
+        return None
+    return dt
+
+
+def datas_no_texto(texto_norm):
+    """Datas escritas por extenso ("05 de março de 2026", "27, Março, 2026") ou
+    "06 de 04 de 2026". Não pega dd/mm/aaaa (no rodapé costuma ter a data de
+    impressão e a validade da portaria do examinador)."""
+    out = []
+    for d, mes, a in re.findall(r"\b(\d{1,2})\s*,?\s*(?:de\s+)?([a-z]{4,9})\s*,?\s*(?:de\s+)?(\d{4})\b", texto_norm):
+        if mes in MESES:
+            dt = _data_ok(d, MESES[mes], a)
+            if dt:
+                out.append(dt)
+    for d, m, a in re.findall(r"\b(\d{1,2})\s*_*\s*(?:de\s+)?(\d{1,2})\s+de\s+(\d{4})\b", texto_norm):
+        dt = _data_ok(d, m, a)
+        if dt:
+            out.append(dt)
+    return out
+
+
+def mais_um_ano(dt):
+    try:
+        return dt.replace(year=dt.year + 1)
+    except ValueError:  # 29/02
+        return dt.replace(year=dt.year + 1, day=28)
+
+
+def fmt_dash(dt):
+    return dt.strftime("%d-%m-%Y")
 
 
 def extract_all_tables(pdf):
@@ -359,6 +484,12 @@ def rule_simaf(full_text_norm, full_text, pdf):
 
 def normalize_finalidade(raw):
     n = norm(raw)
+    # Mudança de local de acervo (inclui a guia manual da PF de retirada da
+    # arma na casa do proprietário anterior) e manutenção (ida ao armeiro).
+    if "mudanca de local" in n or "retirada de arma" in n:
+        return "Mudança de Local de Acervo"
+    if "manutencao" in n:
+        return "Manutenção"
     # "esportivo" cobre tanto "Tiro Esportivo" quanto "Tiro Desportivo"
     # (os dois termos aparecem em guias reais, dependendo do órgão emissor).
     if "esportivo" in n:
@@ -377,6 +508,10 @@ def extract_local_destino_block(full_text):
         full_text,
         re.IGNORECASE | re.DOTALL,
     )
+    if m:
+        return m.group(1)
+    # Guia manual da PF: "LOCAIS DE DESTINO: ... FINALIDADE DO TRÂNSITO"
+    m = re.search(r"LOCA(?:L|IS) DE DESTINO:?(.*?)FINALIDADE", full_text, re.IGNORECASE | re.DOTALL)
     return m.group(1) if m else ""
 
 
@@ -474,7 +609,9 @@ def extract_destino_cidade_uf(full_text):
         re.IGNORECASE,
     )
     if not m:
-        return ""
+        # Guia manual da PF: "Município: Vacaria UF: RS"
+        m2 = re.search(r"Munic[ií]pio:\s*(.+?)\s+UF:\s*([A-Z]{2})\b", block, re.IGNORECASE)
+        return f"{m2.group(1).strip()}-{m2.group(2).upper()}" if m2 else ""
     parts = [p.strip() for p in m.group(1).split("/")]
     preenchido = lambda v: v and not set(v.upper()) <= {"X"}  # noqa: E731
     cidade = parts[1] if len(parts) > 1 and preenchido(parts[1]) else ""
@@ -489,10 +626,13 @@ def rule_gt(full_text_norm, full_text, pdf):
         return None
     tables = extract_all_tables(pdf)
     res = table_lookup(tables, {"tipo": "especie", "modelo": "modelo"})
+    if not res:  # guia manual da PF: tabela sem a coluna Modelo
+        res = table_lookup(tables, {"tipo": "especie"})
     tipo = compound_cell_value(res, "tipo", "especie")
     modelo = compound_cell_value(res, "modelo", "modelo")
 
-    m_fin = re.search(r"FINALIDADE\s*\n\s*([^\n]+)", full_text, re.IGNORECASE)
+    m_fin = (re.search(r"FINALIDADE\s*\n\s*([^\n]+)", full_text, re.IGNORECASE)
+             or re.search(r"FINALIDADE[^\n]*\n\s*([^\n]+)", full_text, re.IGNORECASE))
     finalidade = normalize_finalidade(m_fin.group(1)) if m_fin else ""
 
     destino = extract_destino(full_text, finalidade)
@@ -504,6 +644,9 @@ def rule_gt(full_text_norm, full_text, pdf):
         full_text,
         re.IGNORECASE,
     )
+    if not m_val:  # guia manual da PF: "PRAZO DE VALIDADE ... de 11/08/2026 a 10/09/2026"
+        m_val = re.search(r"PRAZO DE VALIDADE.*?de\s+" + DATE_RE + r"\s+a\s+" + DATE_RE,
+                          full_text, re.IGNORECASE | re.DOTALL)
     if not m_val:
         return None, "GT: não encontrei as duas datas de Validade."
     segunda_data = m_val.group(2)
@@ -515,8 +658,58 @@ def rule_gt(full_text_norm, full_text, pdf):
     return name, None
 
 
+def data_avaliacao_psicologica(tn):
+    """Data da avaliação do laudo psicológico (texto normalizado)."""
+    m = re.search(r"data (?:da |de )?avaliacao\s*:?\s*(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{2,4})", tn)
+    if m:
+        dt = _data_ok(*m.groups())
+        if dt:
+            return dt
+    m = re.search(r"data (?:da |de )?avaliacao\s*:?\s*([^\n]{0,40})", tn)
+    if m:
+        ds = datas_no_texto(m.group(1))
+        if ds:
+            return ds[0]
+    ds = datas_no_texto(tn)  # sem o campo: a data do local/assinatura
+    return max(ds) if ds else None
+
+
+def rule_ap(full_text_norm, full_text, pdf):
+    tn = full_text_norm
+    if "laudo psicologico" not in tn and not ("avaliacao psicologica" in tn and "manuseio de arma" in tn):
+        return None
+    dt = data_avaliacao_psicologica(tn)
+    if not dt:
+        return None, "Avaliação Psicológica: não encontrei a data da avaliação."
+    return join_parts("Avaliação Psicológica Val", fmt_dash(mais_um_ano(dt))), None
+
+
+TIPOS_TESTE = {"pistola": "Pistola", "revolver": "Revólver", "espingarda": "Espingarda",
+               "carabina": "Carabina", "rifle": "Rifle", "fuzil": "Fuzil"}
+
+
+def tipo_arma_teste(tn):
+    for padrao in (r"(?:^|\n)[^a-z\n]{0,4}t?ipo\s*:?\s*([a-z]+)",   # "TIPO PISTOLA", "TIPO: Pistola"
+                   r"(?:^|\n)[^a-z\n]{0,4}po\s*:\s*([a-z]+)",        # OCR que perdeu o "TI"
+                   r"especie\s*:\s*([a-z]+)"):
+        for v in re.findall(padrao, tn):
+            if v in TIPOS_TESTE:
+                return TIPOS_TESTE[v]
+    return ""
+
+
+def rule_teste_tiro(full_text_norm, full_text, pdf):
+    tn = full_text_norm
+    if "capacidade tecnica" not in tn or "comprovante" not in tn:
+        return None
+    ds = datas_no_texto(tn)
+    if not ds:
+        return None, "Teste de Tiro: não encontrei a data do teste."
+    return join_parts("Teste de Tiro", tipo_arma_teste(tn), "Val", fmt_dash(mais_um_ano(max(ds)))), None
+
+
 # Ordem importa: do mais específico para o mais genérico.
-RULES = [rule_craf, rule_cac, rule_ctf, rule_simaf, rule_gt]
+RULES = [rule_craf, rule_cac, rule_ctf, rule_simaf, rule_gt, rule_ap, rule_teste_tiro]
 
 
 def classify_and_name(pdf_path):
@@ -527,8 +720,10 @@ def classify_and_name(pdf_path):
     """
     try:
         with pdfplumber.open(pdf_path) as pdf:
-            full_text = extract_full_text(pdf)
+            full_text, via_ocr = texto_do_pdf(pdf)
             full_text_norm = norm(full_text)
+            if len(full_text.strip()) < MIN_TEXTO and not via_ocr and not tesseract_cmd():
+                return None, "PDF sem texto (imagem/escaneado): instale o Tesseract para ler por OCR."
             first_error = None
             for rule in RULES:
                 result = rule(full_text_norm, full_text, pdf)
@@ -542,6 +737,8 @@ def classify_and_name(pdf_path):
                 # palavra-chave bateu mas a extração falhou: tenta as
                 # próximas regras antes de desistir (evita falso-positivo
                 # de uma regra bloquear a regra correta).
+            if via_ocr and first_error:
+                first_error += " (lido por OCR)"
             return None, first_error
     except Exception as exc:
         return None, f"erro ao ler o PDF: {exc}"

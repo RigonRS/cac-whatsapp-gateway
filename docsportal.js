@@ -13,8 +13,9 @@ const db = require('./db');
 const PYTHON = process.env.PYTHON_BIN || 'python3';
 const EXTRATOR = path.join(__dirname, 'extrator', 'extrair_documentos.py');
 // Mude quando o extrator mudar: invalida o cache das leituras antigas.
-const VERSAO_EXTRATOR = '3';
-const PDFS_POR_LOTE = 15;
+const VERSAO_EXTRATOR = '4';
+// Com OCR (PDFs sem texto) cada lote pode demorar mais: lotes menores e mais tempo.
+const PDFS_POR_LOTE = 8;
 
 const ehPdf = (nome) => /\.pdf$/i.test(nome || '');
 // O conteúdo define a chave (renomear não muda o hash nem o cTag).
@@ -22,7 +23,7 @@ const chaveCache = (it) => `${VERSAO_EXTRATOR}:${(it.file && it.file.hashes && i
 
 function rodarExtrator(caminhos) {
   return new Promise((resolve, reject) => {
-    execFile(PYTHON, [EXTRATOR, ...caminhos], { timeout: 180000, maxBuffer: 50 * 1024 * 1024 }, (err, stdout) => {
+    execFile(PYTHON, [EXTRATOR, ...caminhos], { timeout: 600000, maxBuffer: 50 * 1024 * 1024 }, (err, stdout) => {
       if (err) return reject(new Error('extrator: ' + err.message));
       try { resolve(JSON.parse(stdout)); } catch (e) { reject(new Error('extrator devolveu uma resposta inválida')); }
     });

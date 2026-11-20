@@ -125,7 +125,7 @@ function getSaude() {
 
 let sock = null;
 let estado = { conectado: false, qr: null, numero: null, sincronizando: false, syncProgress: null };
-let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {}, onRead: () => {}, onReaction: () => {}, onSync: () => {}, onMessageUpdate: () => {} };
+let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {}, onRead: () => {}, onReaction: () => {}, onSync: () => {}, onMessageUpdate: () => {}, onPresence: () => {} };
 
 // ---- Controle da sincronização de histórico (barra de progresso no front) ----
 let syncTimer = null;
@@ -467,6 +467,15 @@ async function conectar() {
     }
   });
 
+  // Contato digitando / gravando áudio (só chega para conversas "assinadas" com presenceSubscribe)
+  sock.ev.on('presence.update', ({ id, presences }) => {
+    try {
+      const estados = Object.values(presences || {}).map(p => p && p.lastKnownPresence).filter(Boolean);
+      const estado = estados.includes('recording') ? 'recording' : (estados.includes('composing') ? 'composing' : (estados[0] || 'paused'));
+      handlers.onPresence({ jid: id, estado });
+    } catch (e) {}
+  });
+
   // Reações às mensagens (emoji)
   sock.ev.on('messages.reaction', (reactions) => {
     for (const r of (reactions || [])) {
@@ -640,6 +649,12 @@ async function editarTexto(msg, texto) {
   await sock.sendMessage(key.remoteJid, { text: texto, edit: key });
 }
 
+// Pede ao WhatsApp para avisar quando o contato estiver digitando/gravando (vale por um tempo).
+async function assinarPresenca(jid) {
+  if (!sock || !estado.conectado || !jid || String(jid).endsWith('@g.us')) return;
+  try { await sock.presenceSubscribe(jid); } catch (e) {}
+}
+
 // Desconecta o número (desloga a sessão). O WhatsApp volta a pedir um novo QR.
 // NÃO depende do sock.logout() concluir — a sessão pode estar travada/corrompida.
 async function logout() {
@@ -716,4 +731,4 @@ function initWA(h) {
   conectar().catch((e) => console.error('[wa] erro ao conectar:', e.message));
 }
 
-module.exports = { apagarParaTodos, apagarParaMim, editarTexto, initWA, sendText, sendMedia, forward, avatarUrl, getEstado, getSaude, logout, listarGrupos, enviarParaGrupo };
+module.exports = { assinarPresenca, apagarParaTodos, apagarParaMim, editarTexto, initWA, sendText, sendMedia, forward, avatarUrl, getEstado, getSaude, logout, listarGrupos, enviarParaGrupo };
