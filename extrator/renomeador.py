@@ -11,8 +11,11 @@ acordo com o tipo de documento identificado:
 1) Contém "Certificado de Registro" e "Atividades Autorizadas"
    -> "Certificado de Registro CAC.pdf"
 
-2) Contém "Certificado de Registro de Arma de Fogo"
+2) Contém "Certificado de Registro de Arma de Fogo" (ou "... Federal de Arma")
    -> "CRAF <Tipo> <Marca>.pdf"
+      Lê TIPO/MARCA pela posição na página (modelos com rótulo em cima do
+      valor, inclusive o novo da PF de 2026) ou pelo texto "Espécie: X" /
+      "Marca: Y" (modelo da PF/SEI e SINARM antigo).
 
 3) Contém "Guia" (Guia de Tráfego Especial)
    -> "GT <Tipo> <Marca> <Finalidade> <Destino> Val DD-MM-AAAA.pdf"
@@ -244,17 +247,58 @@ def extract_tipo_marca_by_position(pdf):
         marca_val = " ".join(marca_words).strip()
         if tipo_val or marca_val:
             return tipo_val, marca_val
+    # Modelo novo da PF ("Visualizar Documento (CRAF)", 2026): TIPO e MARCA
+    # ficam em linhas diferentes ("N. DO REGISTRO  TIPO" e "CALIBRE  MARCA"),
+    # cada rótulo com o valor logo na linha de baixo.
+    for page in pdf.pages:
+        words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
+        tipo_val = valor_abaixo_do_rotulo(words, "TIPO")
+        marca_val = valor_abaixo_do_rotulo(words, "MARCA")
+        if tipo_val and marca_val:
+            return tipo_val, marca_val
     return "", ""
+
+
+def valor_abaixo_do_rotulo(words, rotulo):
+    """Texto da linha logo abaixo do rótulo, na coluna do rótulo (o valor
+    começa até 6pt à esquerda dele e vai até a próxima coluna)."""
+    label = next((w for w in words if w["text"].strip().upper() == rotulo), None)
+    if not label:
+        return ""
+    abaixo = [w for w in words if label["bottom"] - 1 < w["top"] < label["bottom"] + 16]
+    if not abaixo:
+        return ""
+    linha_top = min(w["top"] for w in abaixo)
+    linha = [w for w in abaixo if abs(w["top"] - linha_top) < 3]
+    # Próximo rótulo à direita na mesma linha do rótulo limita a coluna.
+    vizinhos = [w["x0"] for w in words if abs(w["top"] - label["top"]) < 3 and w["x0"] > label["x1"] + 20]
+    limite = min(vizinhos) - 6 if vizinhos else float("inf")
+    valor = [w for w in sorted(linha, key=lambda w: w["x0"]) if label["x0"] - 6 <= w["x0"] < limite]
+    return " ".join(w["text"] for w in valor).strip()
 
 
 # ---------------------------------------------------------------------------
 # Classificadores / geradores de nome — um por tipo de documento
 # ---------------------------------------------------------------------------
 
+def extract_tipo_marca_por_rotulo(full_text):
+    """CRAF da PF no formato "Rótulo: valor" (SEI e SINARM antigo), ex.:
+    "Espécie: PISTOLA" e "Marca: FORJAS TAURUS Modelo: PT138"."""
+    fim = r"(?=\s{2,}|\s+(?:Modelo|N[ºo°] da Arma|SINARM|MINIST|DEPART|Capacidade|Esp[ée]cie)\b|\n|$)"
+    m_tipo = re.search(r"Esp[ée]cie\s*:\s*(carabina\s*/\s*fuzil|[^\s\d:]+)", full_text, re.IGNORECASE)
+    m_marca = re.search(r"Marca\s*:\s*(.+?)" + fim, full_text, re.IGNORECASE)
+    tipo = m_tipo.group(1).strip() if m_tipo else ""
+    marca = m_marca.group(1).strip() if m_marca else ""
+    return tipo, marca
+
+
 def rule_craf(full_text_norm, full_text, pdf):
-    if "certificado de registro de arma de fogo" not in full_text_norm:
+    if ("certificado de registro de arma de fogo" not in full_text_norm
+            and "certificado de registro federal de arma" not in full_text_norm):
         return None
     tipo, marca = extract_tipo_marca_by_position(pdf)
+    if not tipo and not marca:
+        tipo, marca = extract_tipo_marca_por_rotulo(full_text)
     if not tipo and not marca:
         return None, "CRAF: não consegui ler TIPO/MARCA (verifique manualmente)."
     name = join_parts("CRAF", tipo, marca)

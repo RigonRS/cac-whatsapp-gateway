@@ -204,6 +204,52 @@ app.post('/forward', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ---- Editar / apagar mensagem ----
+// Editar: só mensagens de texto enviadas por nós, até 15 minutos depois do envio.
+// Apagar para todos: só as nossas, até 2 dias (o WhatsApp recusa depois disso).
+// Apagar para mim: qualquer mensagem; some da central.
+const LIMITE_EDICAO_S = 15 * 60;
+const LIMITE_APAGAR_TODOS_S = 2 * 24 * 60 * 60;
+app.post('/message/edit', requireAuth, async (req, res) => {
+  try {
+    const { messageId } = req.body || {};
+    const texto = String((req.body || {}).text || '').trim();
+    const msg = messageId && db.getMensagem(messageId);
+    if (!msg) return res.status(404).json({ error: 'Mensagem não encontrada' });
+    if (!texto) return res.status(400).json({ error: 'O texto não pode ficar vazio' });
+    if (!msg.from_me || msg.type !== 'text') return res.status(400).json({ error: 'Só dá para editar mensagens de texto enviadas por nós' });
+    if (msg.deleted) return res.status(400).json({ error: 'Mensagem apagada' });
+    const agora = Math.floor(Date.now() / 1000);
+    if (agora - Number(msg.ts) > LIMITE_EDICAO_S) return res.status(400).json({ error: 'Passou o prazo de 15 minutos para editar' });
+    await wa.editarTexto(msg, texto);
+    db.editarCorpo(msg.id, texto, agora);
+    io.emit('message-update', { id: msg.id, jid: msg.jid, body: texto, edited: agora });
+    console.log(`[wa] ${req.atendente} editou a mensagem ${msg.id}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/message/delete', requireAuth, async (req, res) => {
+  try {
+    const { messageId, paraTodos } = req.body || {};
+    const msg = messageId && db.getMensagem(messageId);
+    if (!msg) return res.status(404).json({ error: 'Mensagem não encontrada' });
+    if (paraTodos) {
+      if (!msg.from_me) return res.status(400).json({ error: 'Só dá para apagar para todos as mensagens enviadas por nós' });
+      if (Math.floor(Date.now() / 1000) - Number(msg.ts) > LIMITE_APAGAR_TODOS_S) return res.status(400).json({ error: 'Passou o prazo do WhatsApp para apagar para todos (2 dias)' });
+      await wa.apagarParaTodos(msg);
+      db.marcarApagada(msg.id);
+      io.emit('message-update', { id: msg.id, jid: msg.jid, deleted: true });
+    } else {
+      await wa.apagarParaMim(msg);
+      db.ocultarMensagem(msg.id);
+      io.emit('message-update', { id: msg.id, jid: msg.jid, hidden: true });
+    }
+    console.log(`[wa] ${req.atendente} apagou a mensagem ${msg.id} ${paraTodos ? 'para todos' : 'para mim'}`);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/assign', requireAuth, (req, res) => {
   const { jid } = req.body || {};
   if (!jid) return res.status(400).json({ error: 'jid é obrigatório' });
@@ -276,6 +322,7 @@ wa.initWA({
   onRefresh: () => io.emit('refresh'),
   onRead: (jid) => { db.marcarLido(jid); io.emit('read', { jid }); },
   onReaction: (d) => io.emit('reaction', d),
+  onMessageUpdate: (d) => io.emit('message-update', d),
   onSync: (info) => io.emit('sync', info),
 });
 

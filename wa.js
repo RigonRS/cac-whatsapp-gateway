@@ -125,7 +125,7 @@ function getSaude() {
 
 let sock = null;
 let estado = { conectado: false, qr: null, numero: null, sincronizando: false, syncProgress: null };
-let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {}, onRead: () => {}, onReaction: () => {}, onSync: () => {} };
+let handlers = { onMessage: () => {}, onStatus: () => {}, onRefresh: () => {}, onRead: () => {}, onReaction: () => {}, onSync: () => {}, onMessageUpdate: () => {} };
 
 // ---- Controle da sincronização de histórico (barra de progresso no front) ----
 let syncTimer = null;
@@ -449,6 +449,24 @@ async function conectar() {
   sock.ev.on('chats.update', (updates) => { for (const u of (updates || [])) marcarLidoUpdate(u); });
   sock.ev.on('chats.upsert', (chats) => { for (const u of (chats || [])) marcarLidoUpdate(u); });
 
+  // Mensagem apagada para todos / editada (por nós em outro aparelho ou pelo contato).
+  // Algumas versões do WhatsApp avisam por aqui; outras por um protocolMessage (ver processarMensagem).
+  sock.ev.on('messages.update', (updates) => {
+    for (const u of (updates || [])) {
+      try {
+        const id = u.key?.id; const jid = u.key?.remoteJid; const up = u.update || {};
+        if (!id) continue;
+        if (up.message === null && (up.messageStubType === 1 || up.messageStubType === 'REVOKE')) {
+          aplicarApagada(id, jid);
+        } else if (up.message) {
+          const ed = up.message.editedMessage?.message?.protocolMessage?.editedMessage
+            || up.message.protocolMessage?.editedMessage || up.message.editedMessage?.message;
+          if (ed) aplicarEdicao(id, jid, textoDeMensagem(ed), Math.floor(Date.now() / 1000));
+        }
+      } catch (e) {}
+    }
+  });
+
   // Reações às mensagens (emoji)
   sock.ev.on('messages.reaction', (reactions) => {
     for (const r of (reactions || [])) {
@@ -470,6 +488,16 @@ async function processarMensagem(m, live = true) {
   if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return false;
   if (!m.message) return false;
   m.message = desembrulhar(m.message);   // trata documento-com-legenda, efêmeras, etc.
+  // Aviso de mensagem apagada para todos (REVOKE = 0) ou editada (MESSAGE_EDIT = 14):
+  // não é uma mensagem nova, só altera a mensagem original.
+  const pm = m.message.protocolMessage;
+  if (pm) {
+    const alvo = pm.key?.id;
+    const ts = Number(m.messageTimestamp) || Math.floor(Date.now() / 1000);
+    if (alvo && (pm.type === 0 || pm.type === 'REVOKE')) aplicarApagada(alvo, jid, live);
+    else if (alvo && (pm.type === 14 || pm.type === 'MESSAGE_EDIT') && pm.editedMessage) aplicarEdicao(alvo, jid, textoDeMensagem(pm.editedMessage), ts, live);
+    return false;
+  }
   const ehGrupo = jid.endsWith('@g.us');
 
   const fromMe = !!m.key.fromMe;
@@ -579,6 +607,39 @@ async function sendMedia(jid, filename, mimetype, buffer, caption) {
   return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: caption || '', type: tipo, mediaName: filename, mediaUrl, ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: rawJSON(r.key, r.message) };
 }
 
+// ---- Apagar / editar mensagem ----
+// Chave original da mensagem no WhatsApp (guardada no "raw"); sem ela, monta pelo id.
+function chaveDaMensagem(msg) {
+  try { const k = JSON.parse(msg.raw || 'null')?.key; if (k && k.id) return k; } catch (e) {}
+  return { remoteJid: msg.jid, fromMe: !!msg.from_me, id: msg.id };
+}
+function aplicarApagada(id, jid, live = true) {
+  if (db.marcarApagada(id) && live) handlers.onMessageUpdate({ id, jid, deleted: true });
+}
+function aplicarEdicao(id, jid, body, ts, live = true) {
+  if (!body) return;
+  if (db.editarCorpo(id, body, ts) && live) handlers.onMessageUpdate({ id, jid, body, edited: ts });
+}
+// Apaga para todos (some do celular do contato também).
+async function apagarParaTodos(msg) {
+  if (!sock || !estado.conectado) throw new Error('WhatsApp não está conectado.');
+  const key = chaveDaMensagem(msg);
+  await sock.sendMessage(key.remoteJid, { delete: key });
+}
+// Apaga só para nós: tira do WhatsApp deste número (melhor esforço) — a central esconde de qualquer jeito.
+async function apagarParaMim(msg) {
+  if (!sock || !estado.conectado) return;
+  const key = chaveDaMensagem(msg);
+  try { await sock.chatModify({ deleteForMe: { deleteMedia: true, key, timestamp: Number(msg.ts) || Math.floor(Date.now() / 1000) } }, key.remoteJid); }
+  catch (e) { console.warn('[wa] apagar para mim:', e.message); }
+}
+// Edita o texto de uma mensagem enviada por nós.
+async function editarTexto(msg, texto) {
+  if (!sock || !estado.conectado) throw new Error('WhatsApp não está conectado.');
+  const key = chaveDaMensagem(msg);
+  await sock.sendMessage(key.remoteJid, { text: texto, edit: key });
+}
+
 // Desconecta o número (desloga a sessão). O WhatsApp volta a pedir um novo QR.
 // NÃO depende do sock.logout() concluir — a sessão pode estar travada/corrompida.
 async function logout() {
@@ -655,4 +716,4 @@ function initWA(h) {
   conectar().catch((e) => console.error('[wa] erro ao conectar:', e.message));
 }
 
-module.exports = { initWA, sendText, sendMedia, forward, avatarUrl, getEstado, getSaude, logout, listarGrupos, enviarParaGrupo };
+module.exports = { apagarParaTodos, apagarParaMim, editarTexto, initWA, sendText, sendMedia, forward, avatarUrl, getEstado, getSaude, logout, listarGrupos, enviarParaGrupo };

@@ -61,6 +61,11 @@ addCol('messages', 'reply_body', 'TEXT');
 //  resolved_ts       -> conversa marcada como resolvida até este instante (não requer resposta)
 //  report_count      -> quantas vezes já apareceu em relatórios enviados sem resposta nossa
 //  report_count_ts   -> a qual "ts" da última mensagem do cliente esse contador se refere
+// Mensagem apagada para todos (deleted=1), editada (edited = quando) e
+// apagada só para nós (hidden=1: some da central, fica no banco).
+addCol('messages', 'deleted', 'INTEGER');
+addCol('messages', 'edited', 'INTEGER');
+addCol('messages', 'hidden', 'INTEGER');
 addCol('chats', 'resolved_ts', 'INTEGER');
 addCol('chats', 'report_count', 'INTEGER');
 addCol('chats', 'report_count_ts', 'INTEGER');
@@ -119,8 +124,19 @@ function listarMensagens(jid, limite = 500) {
   // Traz as MAIS RECENTES (DESC + LIMIT) e devolve em ordem crescente. Antes usava ASC,
   // que trazia as 500 mais ANTIGAS: numa conversa com +500 mensagens, as recentes ficavam
   // de fora e não apareciam (ex.: metade @s.whatsapp.net antiga do contato).
-  const rows = db.prepare(`SELECT * FROM messages WHERE jid = ? ORDER BY ts DESC LIMIT ?`).all(jid, limite);
+  const rows = db.prepare(`SELECT * FROM messages WHERE jid = ? AND COALESCE(hidden, 0) = 0 ORDER BY ts DESC LIMIT ?`).all(jid, limite);
   return rows.reverse();
+}
+
+// ---- Mensagem apagada / editada ----
+function marcarApagada(id) {
+  return db.prepare(`UPDATE messages SET deleted = 1 WHERE id = ?`).run(id).changes;
+}
+function editarCorpo(id, body, ts) {
+  return db.prepare(`UPDATE messages SET body = ?, edited = ? WHERE id = ?`).run(body, ts, id).changes;
+}
+function ocultarMensagem(id) {
+  return db.prepare(`UPDATE messages SET hidden = 1 WHERE id = ?`).run(id).changes;
 }
 
 function getMensagem(id) {
@@ -208,4 +224,4 @@ function salvarExtracaoDoc(itemId, chave, dados) {
     .run(itemId, chave, JSON.stringify(dados), Date.now());
 }
 
-module.exports = { getExtracaoDoc, salvarExtracaoDoc, registrarMensagem, listarChats, listarMensagens, getMensagem, getChatPhone, marcarLido, marcarTodosLidos, marcarNaoLido, setReacao, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens, marcarResolvida, setContadorRelatorio };
+module.exports = { marcarApagada, editarCorpo, ocultarMensagem, getExtracaoDoc, salvarExtracaoDoc, registrarMensagem, listarChats, listarMensagens, getMensagem, getChatPhone, marcarLido, marcarTodosLidos, marcarNaoLido, setReacao, definirAtendente, salvarContato, listarContatos, limparNomeDono, buscarMensagens, marcarResolvida, setContadorRelatorio };

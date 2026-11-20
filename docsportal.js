@@ -13,7 +13,7 @@ const db = require('./db');
 const PYTHON = process.env.PYTHON_BIN || 'python3';
 const EXTRATOR = path.join(__dirname, 'extrator', 'extrair_documentos.py');
 // Mude quando o extrator mudar: invalida o cache das leituras antigas.
-const VERSAO_EXTRATOR = '2';
+const VERSAO_EXTRATOR = '3';
 const PDFS_POR_LOTE = 15;
 
 const ehPdf = (nome) => /\.pdf$/i.test(nome || '');

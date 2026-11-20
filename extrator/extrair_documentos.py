@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Extrai os dados de CRAF, Guia de Tráfego e SIMAF dos PDFs da pasta
+Extrai os dados de CRAF, Guia de Tráfego, SIMAF e CTF dos PDFs da pasta
 "DOCUMENTOS PORTAL" dos clientes, para importação no CAC Gestão.
 
 O nome sugerido de cada arquivo vem do renomeador (renomeador.py, cópia
@@ -431,10 +431,34 @@ def extrair_simaf(texto, tn, pdf):
 
 
 # ---------------------------------------------------------------------------
+# CTF / IBAMA (Certificado de Regularidade)
+# ---------------------------------------------------------------------------
+
+def extrair_ctf(texto, tn, pdf):
+    """Validade ("CR válido até"), emissão e nº do registro. A validade usa a
+    mesma leitura do renomeador (tabela; senão, a linha com as 3 datas)."""
+    c = {"registro": "", "emissao": None, "validade": None, "cpf": "", "nome": ""}
+    tabelas = todas_tabelas(pdf)
+    res = R.table_lookup(tabelas, {"registro": "registro", "emitido": "cr emitido em", "valido_ate": "cr valido ate"})
+    if res:
+        c["registro"] = so_digitos(R.cell_value(res, "registro"))
+        c["emissao"] = iso(R.cell_value(res, "emitido"))
+        c["validade"] = iso(R.cell_value(res, "valido_ate"))
+    if not c["validade"]:
+        m = re.search(r"(\d{5,})\s+" + DATE + r"\s+" + DATE + r"\s+" + DATE, texto)
+        if m:
+            c["registro"], c["emissao"], c["validade"] = m.group(1), iso(m.group(3)), iso(m.group(4))
+    c["cpf"] = busca(r"CPF\s*:\s*" + CPF_RE, texto)
+    c["nome"] = busca(r"Nome\s*:\s*([^\n]+)", texto)
+    avisos = [] if c["validade"] else ["CTF: não encontrei a data 'CR válido até'."]
+    return c, avisos
+
+
+# ---------------------------------------------------------------------------
 # Principal
 # ---------------------------------------------------------------------------
 
-EXTRATORES = {"craf": extrair_craf, "gt": extrair_gt, "simaf": extrair_simaf}
+EXTRATORES = {"craf": extrair_craf, "gt": extrair_gt, "simaf": extrair_simaf, "ctf": extrair_ctf}
 
 
 def processar(caminho):
