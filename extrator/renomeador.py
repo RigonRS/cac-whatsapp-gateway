@@ -42,7 +42,8 @@ acordo com o tipo de documento identificado:
 Guias de treinamento/tiro desportivo: o endereço de destino é comparado com o
 cadastro de clubes de tiro do CAC Gestão (arquivo "clubes_cadastrados.json"
 ao lado deste script, atualizado automaticamente pelo servidor). Achou o
-clube: o nome do clube vai no nome da guia. Não achou: aparece um AVISO.
+clube: o nome curto do clube vai no nome da guia (ex.: Clube ICT,
+Clube Policiais Civis). Não achou: aparece um AVISO.
 
 Guias de Tráfego também com as finalidades "Mudança de Local de Acervo"
 (inclusive a guia manual da PF de retirada de arma) e "Manutenção" (ida ao
@@ -674,6 +675,25 @@ def clube_pelo_endereco(destino_txt):
     return melhor[1] if melhor else None
 
 
+# Nome curto do clube no nome do arquivo. Vale o "Nome curto nos arquivos" do
+# cadastro de clubes do Gestão; em branco, estes apelidos; senão, o nome cadastrado.
+APELIDOS_CLUBES = [
+    (("POLICIAIS", "CIVIS"), "Clube Policiais Civis"),   # Associação dos Policiais Civis da 25ª Região Policial
+    (("INDEPENDENCIA",), "Clube ICT"),                   # Clube Independência Caça e Tiro
+]
+
+
+def nome_curto_clube(clube):
+    proprio = str(clube.get("NomeArquivo") or "").strip()
+    if proprio:
+        return proprio
+    palavras = set(_palavras(clube.get("Title")))
+    for chaves, apelido in APELIDOS_CLUBES:
+        if all(k in palavras for k in chaves):
+            return apelido
+    return str(clube.get("Title") or "").strip()
+
+
 def clube_pelo_nome(destino_txt):
     """Clube cujo nome cadastrado aparece no destino da guia (ex.: "Nome / Razão Social")."""
     alvo = _palavras(destino_txt)
@@ -740,8 +760,8 @@ def rule_gt(full_text_norm, full_text, pdf):
         bloco_dest = extract_local_destino_block(full_text) or full_text
         clube = clube_pelo_endereco(bloco_dest) or clube_pelo_nome(bloco_dest)
         if clube:
-            destino = str(clube["Title"]).strip()
-            CLUBES_ACHADOS[_ARQUIVO_ATUAL[0]] = destino
+            destino = nome_curto_clube(clube)                                # nome no arquivo
+            CLUBES_ACHADOS[_ARQUIVO_ATUAL[0]] = str(clube["Title"]).strip()  # nome do cadastro (Gestão)
         else:
             m_end = re.search(r"Endere[cç]o e CEP:?\s*([^\n]+)", bloco_dest, re.IGNORECASE)
             end_txt = (m_end.group(1) if m_end else bloco_dest).strip()[:90]

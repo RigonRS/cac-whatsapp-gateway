@@ -29,7 +29,7 @@ async function clubesCadastrados() {
   try {
     const lista = (await graph.getClubes())
       .filter((c) => c && c.Title)
-      .map((c) => ({ Title: String(c.Title).trim(), Endereco: c.Endereco || '', CertificadoRegistro: c.CertificadoRegistro || '' }))
+      .map((c) => ({ Title: String(c.Title).trim(), NomeArquivo: c.NomeArquivo || '', Endereco: c.Endereco || '', CertificadoRegistro: c.CertificadoRegistro || '' }))
       .sort((a, b) => a.Title.localeCompare(b.Title, 'pt-BR'));
     const hash = crypto.createHash('sha1').update(JSON.stringify(lista)).digest('hex').slice(0, 10);
     _clubes = { lista, hash, ts: Date.now() };
