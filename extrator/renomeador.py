@@ -39,6 +39,11 @@ acordo com o tipo de documento identificado:
 7) Comprovante de Capacidade Técnica (Teste de Tiro)
    -> "Teste de Tiro <Tipo> Val DD-MM-AAAA.pdf"   (validade = data do teste + 1 ano)
 
+Guias de treinamento/tiro desportivo: o endereço de destino é comparado com o
+cadastro de clubes de tiro do CAC Gestão (arquivo "clubes_cadastrados.json"
+ao lado deste script, atualizado automaticamente pelo servidor). Achou o
+clube: o nome do clube vai no nome da guia. Não achou: aparece um AVISO.
+
 Guias de Tráfego também com as finalidades "Mudança de Local de Acervo"
 (inclusive a guia manual da PF de retirada de arma) e "Manutenção" (ida ao
 armeiro): destino = "Cidade-UF".
@@ -77,6 +82,7 @@ Uso pelo terminal (opcional):
 
 import argparse
 import datetime
+import json
 import os
 import re
 import shutil
@@ -590,6 +596,98 @@ def extract_destino(full_text, finalidade):
     return ""
 
 
+# ---------------------------------------------------------------------------
+# Cadastro de clubes de tiro (para as guias de treinamento / tiro desportivo)
+# ---------------------------------------------------------------------------
+
+AVISOS = {}          # arquivo -> aviso (mostrado no fim, mas o arquivo é renomeado)
+CLUBES_ACHADOS = {}  # arquivo -> nome do clube cadastrado achado pelo endereço/nome
+_ARQUIVO_ATUAL = [None]
+_CLUBES = [None]
+PALAVRAS_RUA = {"RUA", "R", "AV", "AVENIDA", "ESTRADA", "EST", "RODOVIA", "ROD", "TRAVESSA", "TRAV",
+                "ALAMEDA", "AL", "PRACA", "LINHA", "LOCALIDADE", "VILA", "DE", "DA", "DO", "DAS", "DOS", "E"}
+
+
+def carregar_clubes():
+    """Lista de clubes [{Title, Endereco}] do arquivo exportado pelo servidor.
+    O caminho pode vir na variável CLUBES_JSON (usado no servidor)."""
+    if _CLUBES[0] is None:
+        _CLUBES[0] = []
+        for c in (os.environ.get("CLUBES_JSON"), str(SCRIPT_DIR / "clubes_cadastrados.json")):
+            if c and Path(c).exists():
+                try:
+                    dados = json.load(open(c, encoding="utf-8"))
+                    _CLUBES[0] = [x for x in (dados.get("clubes") if isinstance(dados, dict) else dados) or []
+                                  if isinstance(x, dict) and x.get("Title")]
+                except Exception:
+                    pass
+                break
+    return _CLUBES[0]
+
+
+def _palavras(texto):
+    t = re.sub(r"[^A-Z0-9 ]", " ", strip_accents(texto or "").upper())
+    return [w for w in t.split() if w not in PALAVRAS_RUA]
+
+
+def _parecida(a, b):
+    """Igual, só a inicial (RUA JOSÉ M BORGES) ou uma letra trocada/sobrando em
+    palavras de 5+ letras (MORAIS x MORAES). "a" é a palavra do cadastro."""
+    if a == b:
+        return True
+    if len(b) == 1 and len(a) > 1 and a[0] == b:
+        return True
+    if min(len(a), len(b)) < 5 or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) <= 1
+    curta, longa = (a, b) if len(a) < len(b) else (b, a)
+    return any(longa[:i] + longa[i + 1:] == curta for i in range(len(longa)))
+
+
+def clube_pelo_endereco(destino_txt):
+    """Clube cujo nome da rua (1º trecho do endereço cadastrado) aparece no
+    destino da guia. Se o cadastro e a guia trazem o número, eles precisam bater."""
+    alvo = _palavras(destino_txt)
+    if not alvo:
+        return None
+    melhor = None
+    for clube in carregar_clubes():
+        end = str(clube.get("Endereco") or "")
+        if not end.strip():
+            continue
+        partes = re.split(r",| - |/", end)
+        rua = [w for w in _palavras(partes[0]) if not w.isdigit()]
+        if len(rua) < 2:
+            continue
+        if not all(any(_parecida(w, x) for x in alvo) for w in rua):
+            continue
+        num_clube = next((w for w in _palavras(" ".join(partes[1:2])) if w.isdigit()), None)
+        if num_clube:
+            # número logo depois do nome da rua, na guia
+            pos = max(i for i, x in enumerate(alvo) if any(_parecida(w, x) for w in rua[-1:]))
+            seguinte = next((x for x in alvo[pos + 1:pos + 3] if x.isdigit()), None)
+            if seguinte and seguinte != num_clube:
+                continue
+        if melhor is None or len(rua) > melhor[0]:
+            melhor = (len(rua), clube)
+    return melhor[1] if melhor else None
+
+
+def clube_pelo_nome(destino_txt):
+    """Clube cujo nome cadastrado aparece no destino da guia (ex.: "Nome / Razão Social")."""
+    alvo = _palavras(destino_txt)
+    ignorar = {"CLUBE", "TIRO", "CACA", "ESCOLA", "ASSOCIACAO", "LTDA", "ME", "EIRELI", "CT", "CENTRO"}
+    melhor = None
+    for clube in carregar_clubes():
+        chave = [w for w in _palavras(clube.get("Title")) if w not in ignorar and not w.isdigit()]
+        if not chave or not all(any(w == x or (len(w) >= 5 and _parecida(w, x)) for x in alvo) for w in chave):
+            continue
+        if melhor is None or len(chave) > melhor[0]:
+            melhor = (len(chave), clube)
+    return melhor[1] if melhor else None
+
+
 def destino_sem_nome(destino):
     """Destino vazio, só 'XXX' (campo em branco na guia) ou que começa por um
     logradouro (RUA, AV...) em vez do nome do local."""
@@ -636,6 +734,25 @@ def rule_gt(full_text_norm, full_text, pdf):
     finalidade = normalize_finalidade(m_fin.group(1)) if m_fin else ""
 
     destino = extract_destino(full_text, finalidade)
+    fin_n = norm(finalidade)
+    if "esportivo" in fin_n or "treinamento" in fin_n:
+        # treinamento / tiro desportivo: o local é o clube cadastrado com aquele endereço
+        bloco_dest = extract_local_destino_block(full_text) or full_text
+        clube = clube_pelo_endereco(bloco_dest) or clube_pelo_nome(bloco_dest)
+        if clube:
+            destino = str(clube["Title"]).strip()
+            CLUBES_ACHADOS[_ARQUIVO_ATUAL[0]] = destino
+        else:
+            m_end = re.search(r"Endere[cç]o e CEP:?\s*([^\n]+)", bloco_dest, re.IGNORECASE)
+            end_txt = (m_end.group(1) if m_end else bloco_dest).strip()[:90]
+            sem_endereco = not [w for w in _palavras(end_txt) if set(w) != {"X"}]
+            if not carregar_clubes():
+                aviso = "lista de clubes cadastrados não encontrada (clubes_cadastrados.json)."
+            elif sem_endereco:
+                aviso = "a guia não traz o endereço de destino (XXX): não dá para achar o clube."
+            else:
+                aviso = f"nenhum clube de tiro cadastrado com o endereço de destino ({end_txt})."
+            AVISOS[_ARQUIVO_ATUAL[0]] = aviso
     if destino_sem_nome(destino):
         destino = extract_destino_cidade_uf(full_text) or destino
 
@@ -718,6 +835,9 @@ def classify_and_name(pdf_path):
     Se novo_nome for None, motivo_falha explica o porquê (ou None se
     simplesmente nenhuma regra bateu).
     """
+    _ARQUIVO_ATUAL[0] = str(pdf_path)
+    AVISOS.pop(str(pdf_path), None)
+    CLUBES_ACHADOS.pop(str(pdf_path), None)
     try:
         with pdfplumber.open(pdf_path) as pdf:
             full_text, via_ocr = texto_do_pdf(pdf)
@@ -825,6 +945,12 @@ def main():
         same = old_path.name == new_name
         marker = "= (já está correto)" if same else "->"
         print(f"  {old_path.name}\n    {marker} {new_name}")
+
+    avisos = [(p, AVISOS[str(p)]) for p, _ in planned if str(p) in AVISOS]
+    if avisos:
+        print("\nAVISOS (o arquivo é renomeado, mas confira):")
+        for old_path, msg in avisos:
+            print(f"  {old_path.name}\n    aviso: {msg}")
 
     print("\nNÃO CLASSIFICADOS / REVISAR MANUALMENTE:")
     if not unclassified:

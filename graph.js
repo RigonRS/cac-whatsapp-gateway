@@ -62,6 +62,10 @@ async function getArmas() {
 async function getOrcamentos() {
   return (await readJson(`${DATA_FOLDER}/orcamentos.json`)) || [];
 }
+// Cadastro de clubes de tiro (usado pelo renomeador para achar o clube pelo endereço da guia).
+async function getClubes() {
+  return (await readJson(`${DATA_FOLDER}/clubes.json`)) || [];
+}
 async function getDemandas() {
   return (await readJson(`${DATA_FOLDER}/demandas.json`)) || [];
 }
@@ -127,6 +131,19 @@ async function salvarArquivoCliente(title, filename, buffer) {
   return res.json();
 }
 
+// Grava (ou substitui) um arquivo num caminho do site (as pastas já precisam existir).
+async function salvarArquivoSite(caminho, buffer, tipo = 'application/octet-stream') {
+  const t = await getMsToken();
+  const siteId = await getDocsSiteId();
+  const res = await fetch(`${GRAPH}/sites/${siteId}/drive/root:/${encPath(caminho)}:/content`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${t}`, 'Content-Type': tipo },
+    body: buffer,
+  });
+  if (!res.ok) throw new Error(`upload "${caminho}": HTTP ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
 // ---- Pasta "DOCUMENTOS PORTAL" do cliente (importação de documentos no Gestão) ----
 const SUBPASTA_PORTAL = 'DOCUMENTOS PORTAL';
 
@@ -186,4 +203,4 @@ async function renomearArquivo(itemId, novoNome) {
   return res.json();
 }
 
-module.exports = { getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getOrcamentos, getDemandas, getArquivoDados, getConfigRelatorios, salvarArquivoCliente, listarDocumentosPortal, baixarArquivo, renomearArquivo, DOCS_PATH, SUBPASTA_RECEBIDOS, SUBPASTA_PORTAL };
+module.exports = { getClubes, salvarArquivoSite, getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getOrcamentos, getDemandas, getArquivoDados, getConfigRelatorios, salvarArquivoCliente, listarDocumentosPortal, baixarArquivo, renomearArquivo, DOCS_PATH, SUBPASTA_RECEBIDOS, SUBPASTA_PORTAL };

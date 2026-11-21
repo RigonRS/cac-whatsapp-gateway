@@ -358,5 +358,7 @@ wa.initWA({
 
 // Agendador dos relatórios automáticos (checa de minuto em minuto).
 agendador.iniciar();
+// Copia o cadastro de clubes para a pasta do renomeador (no início e de hora em hora).
+docsPortal.iniciarExportacaoClubes();
 
 server.listen(PORT, () => console.log(`[server] ouvindo na porta ${PORT}`));

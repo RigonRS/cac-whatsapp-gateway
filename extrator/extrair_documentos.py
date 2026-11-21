@@ -518,6 +518,11 @@ def processar(caminho):
             if tipo in EXTRATORES:
                 campos, avisos = EXTRATORES[tipo](texto, tn, pdf)
                 saida["campos"], saida["avisos"] = campos, avisos
+            # Guias de treinamento/tiro desportivo: clube cadastrado achado pelo endereço (ou aviso)
+            if R.CLUBES_ACHADOS.get(str(caminho)):
+                saida["campos"]["clube_cadastrado"] = R.CLUBES_ACHADOS[str(caminho)]
+            if R.AVISOS.get(str(caminho)):
+                saida["avisos"].append("Clube: " + R.AVISOS[str(caminho)])
             if via_ocr:
                 saida["avisos"].append("Lido por OCR (PDF era imagem): confira os dados.")
             elif len(texto.strip()) < R.MIN_TEXTO:

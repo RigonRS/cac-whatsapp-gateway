@@ -18,12 +18,52 @@ const VERSAO_EXTRATOR = '4';
 const PDFS_POR_LOTE = 8;
 
 const ehPdf = (nome) => /\.pdf$/i.test(nome || '');
-// O conteúdo define a chave (renomear não muda o hash nem o cTag).
-const chaveCache = (it) => `${VERSAO_EXTRATOR}:${(it.file && it.file.hashes && it.file.hashes.quickXorHash) || it.cTag || it.eTag || it.lastModifiedDateTime}`;
 
-function rodarExtrator(caminhos) {
+// ---- Clubes de tiro cadastrados (o renomeador acha o clube pelo endereço da guia) ----
+// Guardados por 10 min. A "versão" (hash) entra na chave do cache das leituras:
+// mudou o cadastro de clubes, os PDFs são relidos para atualizar os nomes sugeridos.
+const crypto = require('crypto');
+let _clubes = { lista: [], hash: '0', ts: 0 };
+async function clubesCadastrados() {
+  if (Date.now() - _clubes.ts < 10 * 60 * 1000) return _clubes;
+  try {
+    const lista = (await graph.getClubes())
+      .filter((c) => c && c.Title)
+      .map((c) => ({ Title: String(c.Title).trim(), Endereco: c.Endereco || '', CertificadoRegistro: c.CertificadoRegistro || '' }))
+      .sort((a, b) => a.Title.localeCompare(b.Title, 'pt-BR'));
+    const hash = crypto.createHash('sha1').update(JSON.stringify(lista)).digest('hex').slice(0, 10);
+    _clubes = { lista, hash, ts: Date.now() };
+  } catch (e) {
+    console.error('[docs-portal] clubes:', e.message);
+    _clubes.ts = Date.now() - 9 * 60 * 1000; // tenta de novo em ~1 min
+  }
+  return _clubes;
+}
+
+// Copia o cadastro de clubes para a pasta do renomeador no SharePoint (o .bat dos
+// computadores lê esse arquivo). Só grava quando a lista mudou.
+const ARQUIVO_CLUBES_RENOMEADOR = 'PRISCILA, ANDRIELI E MATHEUS/RENOMEADOR DE ARQUIVOS/clubes_cadastrados.json';
+let _hashClubesExportado = null;
+async function exportarClubesRenomeador() {
+  const c = await clubesCadastrados();
+  if (!c.lista.length || c.hash === _hashClubesExportado) return;
+  const conteudo = JSON.stringify({ atualizado: new Date().toISOString(), clubes: c.lista }, null, 1);
+  await graph.salvarArquivoSite(ARQUIVO_CLUBES_RENOMEADOR, Buffer.from(conteudo, 'utf8'), 'application/json');
+  _hashClubesExportado = c.hash;
+  console.log(`[docs-portal] clubes_cadastrados.json atualizado (${c.lista.length} clubes)`);
+}
+function iniciarExportacaoClubes() {
+  const rodar = () => exportarClubesRenomeador().catch((e) => console.error('[docs-portal] exportar clubes:', e.message));
+  setTimeout(rodar, 30 * 1000);
+  setInterval(rodar, 60 * 60 * 1000);
+}
+
+// O conteúdo define a chave (renomear não muda o hash nem o cTag).
+const chaveCache = (it, hashClubes) => `${VERSAO_EXTRATOR}:${hashClubes || '0'}:${(it.file && it.file.hashes && it.file.hashes.quickXorHash) || it.cTag || it.eTag || it.lastModifiedDateTime}`;
+
+function rodarExtrator(caminhos, clubesJson) {
   return new Promise((resolve, reject) => {
-    execFile(PYTHON, [EXTRATOR, ...caminhos], { timeout: 600000, maxBuffer: 50 * 1024 * 1024 }, (err, stdout) => {
+    execFile(PYTHON, [EXTRATOR, ...caminhos], { timeout: 600000, maxBuffer: 50 * 1024 * 1024, env: { ...process.env, CLUBES_JSON: clubesJson || '' } }, (err, stdout) => {
       if (err) return reject(new Error('extrator: ' + err.message));
       try { resolve(JSON.parse(stdout)); } catch (e) { reject(new Error('extrator devolveu uma resposta inválida')); }
     });
@@ -34,8 +74,9 @@ function rodarExtrator(caminhos) {
 async function extrairItens(itens) {
   const resultado = new Map();
   const faltando = [];
+  const clubes = await clubesCadastrados();
   for (const it of itens.filter((i) => ehPdf(i.name))) {
-    const cache = db.getExtracaoDoc(it.id, chaveCache(it));
+    const cache = db.getExtracaoDoc(it.id, chaveCache(it, clubes.hash));
     if (cache) resultado.set(it.id, cache);
     else faltando.push(it);
   }
@@ -54,11 +95,13 @@ async function extrairItens(itens) {
         }
       }
       if (!baixados.length) continue;
-      const saida = await rodarExtrator(baixados.map((b) => b.caminho));
+      const clubesJson = path.join(dir, 'clubes.json');
+      fs.writeFileSync(clubesJson, JSON.stringify({ clubes: clubes.lista }));
+      const saida = await rodarExtrator(baixados.map((b) => b.caminho), clubesJson);
       saida.forEach((r, k) => {
         const { it } = baixados[k];
         const dados = { tipo: r.tipo, campos: r.campos || {}, avisos: r.avisos || [], nome_sugerido_base: r.nome_sugerido_base || null, motivo_nome: r.motivo_nome || null };
-        db.salvarExtracaoDoc(it.id, chaveCache(it), dados);
+        db.salvarExtracaoDoc(it.id, chaveCache(it, clubes.hash), dados);
         resultado.set(it.id, dados);
       });
     } finally {
@@ -178,4 +221,4 @@ function estadoVarredura() {
   return varredura.rodando ? { ...resto, resultados: null } : { ...resto, resultados };
 }
 
-module.exports = { lerPastaCliente, clientePorId, renomear, iniciarVarredura, estadoVarredura, conferirNomes };
+module.exports = { iniciarExportacaoClubes, exportarClubesRenomeador, lerPastaCliente, clientePorId, renomear, iniciarVarredura, estadoVarredura, conferirNomes };
