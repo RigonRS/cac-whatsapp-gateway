@@ -590,17 +590,17 @@ async function processarMensagem(m, live = true) {
   return true;
 }
 
-async function sendText(jid, texto, quoted) {
+async function sendText(jid, texto, quoted, extra) {
   if (!sock || !estado.conectado) throw new Error('WhatsApp não está conectado.');
   const alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
   const opts = quoted ? { quoted } : {};
-  const r = await sock.sendMessage(alvo, { text: texto }, opts);
+  const r = await sock.sendMessage(alvo, { text: texto, ...(extra || {}) }, opts);
   _guardarEnviada(r.key.id, r.message);
   saude.ultimaMsgEnviada = Date.now();
   return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true, body: texto, type: 'text', ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: rawJSON(r.key, r.message) };
 }
 
-async function sendMedia(jid, filename, mimetype, buffer, caption) {
+async function sendMedia(jid, filename, mimetype, buffer, caption, extra) {
   if (!sock || !estado.conectado) throw new Error('WhatsApp não está conectado.');
   const alvo = jid.includes('@') ? jid : `${jid.replace(/\D/g, '')}@s.whatsapp.net`;
   const mt = mimetype || 'application/octet-stream';
@@ -609,7 +609,7 @@ async function sendMedia(jid, filename, mimetype, buffer, caption) {
   else if (mt.startsWith('video/')) { content = { video: buffer, caption: caption || undefined, mimetype: mt }; tipo = 'video'; }
   else if (mt.startsWith('audio/')) { content = { audio: buffer, mimetype: mt }; tipo = 'audio'; }
   else { content = { document: buffer, fileName: filename, mimetype: mt, caption: caption || undefined }; tipo = 'document'; }
-  const r = await sock.sendMessage(alvo, content);
+  const r = await sock.sendMessage(alvo, { ...content, ...(extra || {}) });
   _guardarEnviada(r.key.id, r.message);
   saude.ultimaMsgEnviada = Date.now();
   const mediaUrl = salvarMediaLocal(r.key.id, filename, buffer);
@@ -672,10 +672,27 @@ async function logout() {
 
 // Encaminha uma mensagem já registrada (texto ou mídia) para outro contato
 const MIME_POR_TIPO = { image: 'image/jpeg', video: 'video/mp4', audio: 'audio/ogg', sticker: 'image/webp' };
+// Marca de "Encaminhada" que o WhatsApp mostra para quem recebe.
+const MARCA_ENCAMINHADA = { contextInfo: { isForwarded: true, forwardingScore: 1 } };
 async function forward(toJid, msg) {
+  if (!sock || !estado.conectado) throw new Error('WhatsApp não está conectado.');
   const tipo = msg.type || 'text';
+  const alvo = toJid.includes('@') ? toJid : `${toJid.replace(/\D/g, '')}@s.whatsapp.net`;
+  // 1º) Encaminhamento "de verdade" do WhatsApp (com a mensagem original guardada)
+  try {
+    const orig = JSON.parse(msg.raw || 'null');
+    if (orig && orig.key && orig.message) {
+      const r = await sock.sendMessage(alvo, { forward: { key: orig.key, message: orig.message } });
+      _guardarEnviada(r.key.id, r.message);
+      saude.ultimaMsgEnviada = Date.now();
+      return { id: r.key.id, jid: alvo, phone: alvo.endsWith('@s.whatsapp.net') ? alvo.split('@')[0] : null, fromMe: true,
+        body: msg.body || '', type: tipo, mediaName: msg.media_name || null, mediaUrl: msg.media_url || null,
+        ts: Math.floor(Date.now() / 1000), author: 'sistema', raw: rawJSON(r.key, r.message) };
+    }
+  } catch (e) { console.warn('[wa] encaminhar (original):', e.message); }
+  // 2º) Reenvia o conteúdo, marcado como encaminhado
   if (tipo === 'text' || tipo === 'other' || !msg.media_url) {
-    return sendText(toJid, msg.body || '');
+    return sendText(toJid, msg.body || '', null, MARCA_ENCAMINHADA);
   }
   const stored = String(msg.media_url).replace('/media/', '');
   const buffer = fs.readFileSync(path.join(MEDIA_DIR, stored));
@@ -683,7 +700,7 @@ async function forward(toJid, msg) {
   const mime = MIME_POR_TIPO[tipo]
     || Object.keys(EXT_POR_MIME).find(k => EXT_POR_MIME[k] === ext)
     || 'application/octet-stream';
-  return sendMedia(toJid, msg.media_name || 'arquivo', mime, buffer, msg.body || undefined);
+  return sendMedia(toJid, msg.media_name || 'arquivo', mime, buffer, msg.body || undefined, MARCA_ENCAMINHADA);
 }
 
 async function avatarUrl(jid) {
