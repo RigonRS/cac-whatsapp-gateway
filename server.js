@@ -332,6 +332,14 @@ app.post('/docs-portal/renomear', requireAuth, async (req, res) => {
   } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
 });
 
+app.post('/docs-portal/mover-vencidos', requireAuth, async (req, res) => {
+  try {
+    const { clienteId, itemIds } = req.body || {};
+    if (!clienteId || !Array.isArray(itemIds) || !itemIds.length) return res.status(400).json({ error: 'clienteId e itemIds são obrigatórios' });
+    res.json({ resultados: await docsPortal.moverVencidos(clienteId, itemIds, req.atendente) });
+  } catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+});
+
 app.post('/docs-portal/varredura', requireAuth, (req, res) => {
   docsPortal.iniciarVarredura(req.atendente);
   res.json(docsPortal.estadoVarredura());

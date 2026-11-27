@@ -184,6 +184,35 @@ async function renomear(clienteId, itens, atendente) {
   return resultados;
 }
 
+// Move PDFs vencidos da pasta DOCUMENTOS PORTAL para "<pasta do cliente>/Docs Vencidos".
+// Só aceita arquivos que estão de fato na pasta DOCUMENTOS PORTAL desse cliente.
+async function moverVencidos(clienteId, itemIds, atendente) {
+  const cliente = await clientePorId(clienteId);
+  const lista = await graph.listarDocumentosPortal(String(cliente.Title || '').trim());
+  if (!lista) throw Object.assign(new Error('Pasta DOCUMENTOS PORTAL do cliente não encontrada'), { status: 404 });
+  const daPasta = new Map(lista.itens.map((i) => [i.id, i]));
+  const pastaCliente = lista.pasta.split('/').slice(0, -1).join('/');   // ".../CR'S/Fulano"
+  let destinoId = null;
+  const resultados = [];
+  for (const itemId of itemIds || []) {
+    const atual = daPasta.get(itemId);
+    if (!atual) { resultados.push({ itemId, ok: false, erro: 'arquivo não pertence à pasta do cliente' }); continue; }
+    try {
+      if (!destinoId) destinoId = await graph.idPastaSite(pastaCliente, graph.SUBPASTA_VENCIDOS);
+      const item = await graph.moverArquivo(itemId, destinoId);
+      console.log(`[docs-portal] ${atendente} moveu "${atual.name}" para "${graph.SUBPASTA_VENCIDOS}" (${cliente.Title})`);
+      resultados.push({ itemId, ok: true, nome: item.name, webUrl: item.webUrl });
+    } catch (e) {
+      resultados.push({ itemId, ok: false, erro: e.message });
+    }
+  }
+  // tira os movidos do resultado da última varredura
+  const movidos = new Set(resultados.filter((r) => r.ok).map((r) => r.itemId));
+  const r = varredura && varredura.resultados && varredura.resultados[clienteId];
+  if (r && movidos.size) r.arquivos = r.arquivos.filter((a) => !movidos.has(a.id));
+  return resultados;
+}
+
 // ---- Varredura de todos os clientes (em segundo plano) ----
 let varredura = null;
 
@@ -221,4 +250,4 @@ function estadoVarredura() {
   return varredura.rodando ? { ...resto, resultados: null } : { ...resto, resultados };
 }
 
-module.exports = { iniciarExportacaoClubes, exportarClubesRenomeador, lerPastaCliente, clientePorId, renomear, iniciarVarredura, estadoVarredura, conferirNomes };
+module.exports = { moverVencidos, iniciarExportacaoClubes, exportarClubesRenomeador, lerPastaCliente, clientePorId, renomear, iniciarVarredura, estadoVarredura, conferirNomes };

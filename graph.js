@@ -203,4 +203,31 @@ async function renomearArquivo(itemId, novoNome) {
   return res.json();
 }
 
-module.exports = { getClubes, salvarArquivoSite, getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getOrcamentos, getDemandas, getArquivoDados, getConfigRelatorios, salvarArquivoCliente, listarDocumentosPortal, baixarArquivo, renomearArquivo, DOCS_PATH, SUBPASTA_RECEBIDOS, SUBPASTA_PORTAL };
+// Pasta "Docs Vencidos" na pasta principal do cliente (ao lado de DOCUMENTOS PORTAL).
+const SUBPASTA_VENCIDOS = 'Docs Vencidos';
+
+// Id de uma pasta do site pelo caminho (cria a última parte se não existir).
+async function idPastaSite(parentPath, nome) {
+  await ensureFolderSite(parentPath, nome);
+  const t = await getMsToken();
+  const siteId = await getDocsSiteId();
+  const res = await fetch(`${GRAPH}/sites/${siteId}/drive/root:/${encPath(`${parentPath}/${nome}`)}?$select=id`, { headers: { Authorization: `Bearer ${t}` } });
+  if (!res.ok) throw new Error(`pasta "${nome}": HTTP ${res.status}`);
+  return (await res.json()).id;
+}
+
+// Move um arquivo para outra pasta (pelo id). Se já existir um arquivo com o mesmo nome lá,
+// o Graph renomeia o que chega (ex.: "arquivo 1.pdf").
+async function moverArquivo(itemId, pastaDestinoId) {
+  const t = await getMsToken();
+  const siteId = await getDocsSiteId();
+  const res = await fetch(`${GRAPH}/sites/${siteId}/drive/items/${encodeURIComponent(itemId)}?@microsoft.graph.conflictBehavior=rename`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${t}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parentReference: { id: pastaDestinoId } }),
+  });
+  if (!res.ok) throw new Error(`mover: HTTP ${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+module.exports = { idPastaSite, moverArquivo, SUBPASTA_VENCIDOS, getClubes, salvarArquivoSite, getMsToken, getClientes, getProcessos, getDocumentos, getArmas, getOrcamentos, getDemandas, getArquivoDados, getConfigRelatorios, salvarArquivoCliente, listarDocumentosPortal, baixarArquivo, renomearArquivo, DOCS_PATH, SUBPASTA_RECEBIDOS, SUBPASTA_PORTAL };
